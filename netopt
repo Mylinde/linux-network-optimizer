@@ -20,7 +20,7 @@ case "$ACTION" in
         ;;
 esac
 
-# Adjust initial congestion/receive windows based on interface type
+# Adjust initial congestion/receive windows based on interface type (WLAN: conservative, Ethernet: aggressive)
 case "$INTERFACE" in
     wl*|wlan*)
         INITCWND=30
