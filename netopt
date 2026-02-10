@@ -68,7 +68,6 @@ fi
 if [ -n "$GATEWAY" ] && [ "$GATEWAY" != "--" ] && [ -n "$IP" ]; then
     # NetworkManager settings (only on first "up" event)
     if [ "$ACTION" = "up" ]; then
-        nmcli con mod "$CONNECTION" ipv4.never-default yes 2>/dev/null
         nmcli con mod "$CONNECTION" ipv4.may-fail no 2>/dev/null
     fi
     
@@ -84,7 +83,6 @@ fi
 # Optimize IPv6 route
 if [ -n "$GATEWAY6" ] && [ "$GATEWAY6" != "--" ]; then
     if [ "$ACTION" = "up" ]; then
-        nmcli con mod "$CONNECTION" ipv6.never-default yes 2>/dev/null
         nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null
     fi
     
