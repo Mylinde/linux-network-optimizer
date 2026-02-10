@@ -39,7 +39,7 @@ tc qdisc replace dev "$INTERFACE" root cake 2>/dev/null
 # TCP optimizations (only set once, not on every event)
 if [ "$ACTION" = "up" ]; then
     sysctl -q -w net.ipv4.tcp_slow_start_after_idle=0
-    sysctl -q -w net.ipv4.tcp_low_latency=1
+    sysctl -q -w net.ipv4.tcp_congestion_control=bbr 
     sysctl -q -w net.ipv4.tcp_notsent_lowat=131072
     sysctl -q -w net.ipv4.tcp_fin_timeout=3
     sysctl -q -w net.ipv4.tcp_tw_reuse=1
@@ -55,7 +55,7 @@ if [ "$ACTION" = "up" ]; then
     
     # Sanity checks (set limits)
     [ "$RMEM_MAX" -lt 4194304 ] && RMEM_MAX=4194304   # Lower limit 4MB
-    [ "$RMEM_MAX" -gt 67108864 ] && RMEM_MAX=67108864 # Upper limit 64MB
+    [ "$RMEM_MAX" -gt 134217728 ] && RMEM_MAX=134217728 # Upper limit 128MB
     
     # Apply calculated values
     sysctl -q -w net.core.rmem_max="$RMEM_MAX"
