@@ -1,0 +1,100 @@
+#!/bin/bash
+# =============================================================================================
+# Linux Network Optimizer
+# Automatic network performance optimization for Linux systems using NetworkManager dispatcher.
+# Licensing: MIT
+# Requires: bash, bc
+# Copyright (c) 2026 Mario Herrmann. All rights reserved.
+# =============================================================================================
+
+# NetworkManager automatically passes these parameters:
+INTERFACE="$1"
+ACTION="$2"
+
+# Only execute on relevant events
+case "$ACTION" in
+    up|dhcp4-change|dhcp6-change)
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+# Determine CONNECTION from the passed interface
+CONNECTION=$(nmcli -g GENERAL.CONNECTION device show "$INTERFACE" 2>/dev/null)
+
+# Determine gateway and IP
+GATEWAY=$(ip route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
+GATEWAY6=$(ip -6 route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
+IP=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+
+# Exit if no interface or connection
+if [ -z "$INTERFACE" ] || [ -z "$CONNECTION" ]; then
+    exit 0
+fi
+
+# Activate CAKE QDisc
+tc qdisc replace dev "$INTERFACE" root cake 2>/dev/null
+
+# TCP optimizations (only set once, not on every event)
+if [ "$ACTION" = "up" ]; then
+    sysctl -q -w net.ipv4.tcp_slow_start_after_idle=0
+    sysctl -q -w net.ipv4.tcp_low_latency=1
+    sysctl -q -w net.ipv4.tcp_notsent_lowat=131072
+    sysctl -q -w net.ipv4.tcp_fin_timeout=3
+    sysctl -q -w net.ipv4.tcp_tw_reuse=1
+    sysctl -q -w net.core.default_qdisc=cake
+
+    # RAM-based TCP buffer calculation
+    TOTAL_RAM_BYTES=$(free -b | awk '/^Mem:/{print $2}')
+    FACTOR="0.002"
+    
+    # Calculate maximum value (requires bc for floating point math)
+    # Ensures minimum of 4MB and maximum of 64MB
+    RMEM_MAX=$(echo "$TOTAL_RAM_BYTES * $FACTOR" | bc -l | cut -d. -f1)
+    
+    # Sanity checks (set limits)
+    [ "$RMEM_MAX" -lt 4194304 ] && RMEM_MAX=4194304   # Lower limit 4MB
+    [ "$RMEM_MAX" -gt 67108864 ] && RMEM_MAX=67108864 # Upper limit 64MB
+    
+    # Apply calculated values
+    sysctl -q -w net.core.rmem_max="$RMEM_MAX"
+    sysctl -q -w net.core.wmem_max="$RMEM_MAX"
+    sysctl -q -w net.ipv4.tcp_rmem="4096 87380 $RMEM_MAX"
+    sysctl -q -w net.ipv4.tcp_wmem="4096 65536 $RMEM_MAX"
+fi
+
+# Optimize IPv4 route
+if [ -n "$GATEWAY" ] && [ "$GATEWAY" != "--" ] && [ -n "$IP" ]; then
+    # NetworkManager settings (only on first "up" event)
+    if [ "$ACTION" = "up" ]; then
+        nmcli con mod "$CONNECTION" ipv4.never-default yes 2>/dev/null
+        nmcli con mod "$CONNECTION" ipv4.may-fail no 2>/dev/null
+    fi
+    
+    # Remove DHCP routes
+    ip route del default via "$GATEWAY" dev "$INTERFACE" proto dhcp 2>/dev/null
+    
+    # Only add static route if it doesn't exist yet
+    if ! ip route show | grep -q "default via $GATEWAY dev $INTERFACE proto static.*initcwnd 40"; then
+        ip route add default via "$GATEWAY" dev "$INTERFACE" proto static src "$IP" metric 500 initcwnd 40 initrwnd 60
+    fi
+fi
+
+# Optimize IPv6 route
+if [ -n "$GATEWAY6" ] && [ "$GATEWAY6" != "--" ]; then
+    if [ "$ACTION" = "up" ]; then
+        nmcli con mod "$CONNECTION" ipv6.never-default yes 2>/dev/null
+        nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null
+    fi
+    
+    # Remove router advertisement routes
+    ip -6 route del default via "$GATEWAY6" dev "$INTERFACE" proto ra 2>/dev/null
+    
+    # Only add static IPv6 route if not present
+    if ! ip -6 route show | grep -q "default via $GATEWAY6 dev $INTERFACE proto static.*initcwnd 40"; then
+        ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" proto static metric 500 initcwnd 40 initrwnd 60 pref high
+    fi
+fi
+
+exit 0
