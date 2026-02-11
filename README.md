@@ -88,6 +88,17 @@ Lower metric = higher priority, so your optimized route is always preferred whil
 - `tcp_tw_reuse=1`: Reuse TIME_WAIT sockets
 - `tcp_congestion_control=bbr`: BBR congestion control for improved performance
 
+### Advanced Latency Optimizations
+The script includes advanced latency optimizations that are particularly effective on kernels with **Cloudflare patches** (e.g., XanMod). These settings help minimize latency spikes caused by TCP buffer reorganization:
+
+- `tcp_adv_win_scale=-2`: Overhead protection to prevent buffer bloat
+- `tcp_collapse_max_bytes=6291456`: Collapse limit for better latency handling
+
+These optimizations are automatically applied and work on standard kernels, but deliver maximum benefit when running on patched kernels like:
+- **XanMod** (Cloudflare-patched kernel)
+- **Liquorix** (desktop-optimized kernel)
+- **CachyOS** (performance-optimized kernel)
+
 ### Adaptive TCP Fast Open
 TCP Initial Congestion Window (initcwnd) and Initial Receive Window (initrwnd) are automatically adjusted based on interface type:
 

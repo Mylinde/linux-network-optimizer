@@ -93,12 +93,25 @@ if [ "$ACTION" = "up" ]; then
     sysctl -q -w net.core.wmem_max="$RMEM_MAX"
     sysctl -q -w net.ipv4.tcp_rmem="4096 87380 $RMEM_MAX"
     sysctl -q -w net.ipv4.tcp_wmem="4096 65536 $RMEM_MAX"
+
+    # =============================================================================================
+    # Advanced Latency Optimizations
+    # ---------------------------------------------------------------------------------------------
+    # These parameters are particularly effective in kernels with Cloudflare patches 
+    # (e.g., XanMod). They help minimize latency spikes caused by TCP buffer reorganization.
+    # =============================================================================================
+
+    # Overhead protection
+    sysctl -q -w net.ipv4.tcp_adv_win_scale=-2
+    # Collapse limit
+    sysctl -q -w net.ipv4.tcp_collapse_max_bytes=6291456
 fi
 
 # Optimize IPv4 route
 if [ -n "$GATEWAY" ] && [ "$GATEWAY" != "--" ] && [ -n "$IP" ]; then
     # NetworkManager settings (only on first "up" event)
     if [ "$ACTION" = "up" ]; then
+        nmcli con mod "$CONNECTION" ipv4.route-metric 600
         nmcli con mod "$CONNECTION" ipv4.may-fail no 2>/dev/null
     fi
     
@@ -111,6 +124,7 @@ fi
 # Optimize IPv6 route
 if [ -n "$GATEWAY6" ] && [ "$GATEWAY6" != "--" ]; then
     if [ "$ACTION" = "up" ]; then
+        nmcli con mod "$CONNECTION" ipv6.route-metric 600
         nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null
     fi
     
