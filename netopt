@@ -39,7 +39,7 @@ IP=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\
 # Interface-specific TCP parameters
 case "$INTERFACE_TYPE" in
     # High-speed wired connections - low latency/loss
-    ethernet|bond|bridge|vlan|infiniband)
+    ethernet|bond|team|bridge|vlan|infiniband|ovs-bridge|ovs-interface|ovs-port)
         INITCWND=40
         INITRWND=60
         ;;
@@ -49,9 +49,13 @@ case "$INTERFACE_TYPE" in
         INITRWND=40
         ;;
     # VPN/Tunnels - variable conditions
-    vpn|wireguard|ip-tunnel)
+    vpn|wireguard|ip-tunnel|tun|pppoe)
         INITCWND=20
         INITRWND=30
+        ;;
+    # Loopback - skip optimization
+    loopback)
+        exit 0
         ;;
     # Unknown/Other - RFC 6928 conservative default
     *)
