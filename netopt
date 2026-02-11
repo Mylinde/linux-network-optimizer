@@ -1,137 +1,78 @@
 #!/bin/bash
-# =============================================================================================
-# Linux Network Optimizer
-# Automatic network performance optimization for Linux systems using NetworkManager dispatcher.
-# Licensing: MIT
-# Requires: bash, bc
-# Copyright (c) 2026 Mario Herrmann. All rights reserved.
-# =============================================================================================
 
-# NetworkManager automatically passes these parameters:
-INTERFACE="$1"
-ACTION="$2"
+# Network Optimize Script
 
-# Only execute on relevant events
-case "$ACTION" in
-    up|dhcp4-change|dhcp6-change)
-        ;;
-    *)
-        exit 0
-        ;;
-esac
+# Function to calculate intelligent tcp_fin_timeout based on RTT
+calculate_fin_timeout() {
+    local INTERFACE=$1
+    local GATEWAY=$2
+    local RTT
 
-# Determine CONNECTION from the passed interface
-CONNECTION=$(nmcli -g GENERAL.CONNECTION device show "$INTERFACE" 2>/dev/null)
+    # Measure RTT to gateway
+    RTT=$(ping -c 4 $GATEWAY | awk -F '/' 'END {print $5}')
 
-# Exit if no interface or connection
-if [ -z "$INTERFACE" ] || [ -z "$CONNECTION" ]; then
-    exit 0
-fi
+    # Determine tcp_fin_timeout based on interface type
+    case $(cat /sys/class/net/$INTERFACE/type) in
+        "ether"|"bond"|"team"|"bridge"|"vlan"|"infiniband")
+            TCP_FIN_TIMEOUT=5
+            ;;  
+        "wifi"|"bluetooth")
+            TCP_FIN_TIMEOUT=10
+            ;;  
+        "gsm"|"cdma"|"wimax")
+            TCP_FIN_TIMEOUT=20
+            ;;  
+        "tun"|"tap"|"pppoe"|"vpn"|"wireguard"|"ip-tunnel")
+            if [[ -n "$RTT" ]]; then
+                TCP_FIN_TIMEOUT=$(echo "3 * $RTT + 5" | bc)
+                if (( $(echo "$TCP_FIN_TIMEOUT > 30" | bc -l) )); then
+                    TCP_FIN_TIMEOUT=30
+                fi
+            else
+                TCP_FIN_TIMEOUT=15
+            fi
+            ;;  
+        *)
+            TCP_FIN_TIMEOUT=15
+            ;;  
+    esac
 
-# Detect interface type via NetworkManager device type
-INTERFACE_TYPE=$(LC_ALL=C nmcli -g GENERAL.TYPE device show "$INTERFACE" 2>/dev/null)
+    echo $TCP_FIN_TIMEOUT
+}
 
-# Determine gateway and IP
-GATEWAY=$(ip route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
-GATEWAY6=$(ip -6 route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
-IP=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+# Extract IPv6 address
+INTERFACE=$1
+IP6=$(ip -6 addr show dev "$INTERFACE" scope global 2>/dev/null | grep -oP '(?<=inet6\s)[0-9a-f:]+' | head -n 1)
 
-# Interface-specific TCP parameters
-case "$INTERFACE_TYPE" in
-    # High-speed wired connections - low latency/loss
-    ethernet|bond|team|bridge|vlan|infiniband|ovs-bridge|ovs-interface|ovs-port)
-        INITCWND=40
-        INITRWND=60
-        ;;
-    # Wireless/Mobile connections - higher latency/loss
-    wifi|gsm|cdma|bluetooth|wimax)
-        INITCWND=30
-        INITRWND=40
-        ;;
-    # VPN/Tunnels - variable conditions
-    vpn|wireguard|ip-tunnel|tun|pppoe)
-        INITCWND=20
-        INITRWND=30
-        ;;
-    # Loopback - skip optimization
-    loopback)
-        exit 0
-        ;;
-    # Unknown/Other - RFC 6928 conservative default
-    *)
-        INITCWND=10
-        INITRWND=10
-        ;;
-esac
-
-# Activate CAKE QDisc
-tc qdisc replace dev "$INTERFACE" root cake 2>/dev/null
-
-# TCP optimizations (only set once, not on every event)
-if [ "$ACTION" = "up" ]; then
-    sysctl -q -w net.ipv4.tcp_slow_start_after_idle=0
-    sysctl -q -w net.ipv4.tcp_congestion_control=bbr 
-    sysctl -q -w net.ipv4.tcp_notsent_lowat=131072
-    sysctl -q -w net.ipv4.tcp_fin_timeout=3
-    sysctl -q -w net.ipv4.tcp_tw_reuse=1
-    sysctl -q -w net.core.default_qdisc=cake
-
-    # RAM-based TCP buffer calculation
-    TOTAL_RAM_BYTES=$(free -b | awk '/^Mem:/{print $2}')
-    FACTOR="0.002"
-    
-    # Calculate maximum value (requires bc for floating point math)
-    # Ensures minimum of 4MB and maximum of 128MB
-    RMEM_MAX=$(echo "$TOTAL_RAM_BYTES * $FACTOR" | bc -l | cut -d. -f1)
-    
-    # Sanity checks (set limits)
-    [ "$RMEM_MAX" -lt 4194304 ] && RMEM_MAX=4194304   # Lower limit 4MB
-    [ "$RMEM_MAX" -gt 134217728 ] && RMEM_MAX=134217728 # Upper limit 128MB
-    
-    # Apply calculated values
-    sysctl -q -w net.core.rmem_max="$RMEM_MAX"
-    sysctl -q -w net.core.wmem_max="$RMEM_MAX"
-    sysctl -q -w net.ipv4.tcp_rmem="4096 87380 $RMEM_MAX"
-    sysctl -q -w net.ipv4.tcp_wmem="4096 65536 $RMEM_MAX"
-
-    # =============================================================================================
-    # Advanced Latency Optimizations
-    # ---------------------------------------------------------------------------------------------
-    # These parameters are particularly effective in kernels with Cloudflare patches 
-    # (e.g., XanMod). They help minimize latency spikes caused by TCP buffer reorganization.
-    # =============================================================================================
-
-    # Overhead protection
-    sysctl -q -w net.ipv4.tcp_adv_win_scale=-2
-    # Collapse limit
-    sysctl -q -w net.ipv4.tcp_collapse_max_bytes=6291456
-fi
-
-# Optimize IPv4 route
-if [ -n "$GATEWAY" ] && [ "$GATEWAY" != "--" ] && [ -n "$IP" ]; then
-    # NetworkManager settings (only on first "up" event)
-    if [ "$ACTION" = "up" ]; then
-        nmcli con mod "$CONNECTION" ipv4.route-metric 600
-        nmcli con mod "$CONNECTION" ipv4.may-fail no 2>/dev/null
+# Validate IPv6 gateway
+if [[ -n "$2" ]]; then
+    GATEWAY=$2
+    if [[ "$GATEWAY" =~ ^2000:.* ]] || [[ "$GATEWAY" =~ ^fe80:.* ]]; then
+        echo "Valid IPv6 gateway"
+    else
+        echo "Invalid IPv6 gateway" >&2
+        exit 1
     fi
-    
-    # Only add static route if it doesn't exist yet
-    if ! ip route show | grep -q "default via $GATEWAY dev $INTERFACE proto static.*initcwnd $INITCWND"; then
-        ip route add default via "$GATEWAY" dev "$INTERFACE" proto static src "$IP" metric 500 initcwnd $INITCWND initrwnd $INITRWND
+else
+    echo "No IPv6 gateway provided" >&2
+    exit 1
+fi
+
+# Check for global IPv6 address and handle gateway accordingly
+if [[ -n "$IP6" ]]; then
+    # Add the global IPv6 route
+    ip -6 route add $GATEWAY dev "$INTERFACE" src "$IP6"
+else
+    # No global IPv6 address, handle link-local address
+    if [[ "$GATEWAY" == fe80::* ]]; then
+        ip -6 route add $GATEWAY dev "$INTERFACE"
+    else
+        echo "Warning: Gateway exists but no global IPv6 address found" >&2
     fi
 fi
 
-# Optimize IPv6 route
-if [ -n "$GATEWAY6" ] && [ "$GATEWAY6" != "--" ]; then
-    if [ "$ACTION" = "up" ]; then
-        nmcli con mod "$CONNECTION" ipv6.route-metric 600
-        nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null
-    fi
-    
-    # Only add static IPv6 route if not present
-    if ! ip -6 route show | grep -q "default via $GATEWAY6 dev $INTERFACE proto static.*initcwnd $INITCWND"; then
-        ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" proto static metric 500 initcwnd $INITCWND initrwnd $INITRWND pref high
-    fi
-fi
+# Calculate tcp_fin_timeout
+TCP_FIN_TIMEOUT=$(calculate_fin_timeout "$INTERFACE" "$GATEWAY")
 
-exit 0
+# Apply the tcp_fin_timeout using sysctl
+sysctl -w net.ipv4.tcp_fin_timeout=$TCP_FIN_TIMEOUT
