@@ -131,9 +131,27 @@ ip route show default && echo "---" && ip -6 route show default
 ### TCP Parameters
 - `tcp_slow_start_after_idle=0`: No slowdown after idle connections
 - `tcp_notsent_lowat=131072`: Better pacing for small writes
-- `tcp_fin_timeout`: Interface-adaptive (3s for wired, 5s for wireless, 10s for VPN)
+- `tcp_fin_timeout`: Interface-adaptive (3s wired, 5s wireless, 10s VPN; RTT-based for unknown types)
 - `tcp_tw_reuse=1`: Reuse TIME_WAIT sockets
 - `tcp_congestion_control=bbr`: BBR congestion control for improved performance
+- `tcp_adv_win_scale=-2`: Overhead protection to prevent buffer bloat
+- `tcp_collapse_max_bytes=6291456`: Collapse limit for better latency handling
+
+### RTT Measurement Strategy
+The script efficiently measures RTT (Round-Trip Time) for adaptive optimizations:
+
+1. **Primary Method**: `ss -tmi` on established TCP connections (instant, ~5ms)
+   - Tries source IP filter first for most accurate results
+   - Falls back to device-based filter if unavailable
+   - Uses real TCP RTT from actual data connections
+
+2. **Fallback Method**: `ping` to gateway (only if no connections exist)
+   - Fast interval (0.2s) for quicker measurement
+   - 3 packets with 1s timeout
+
+**RTT Usage**:
+- **Buffer Sizing**: Adapts max buffers based on latency (see table below)
+- **TCP FIN Timeout**: For unknown interfaces, uses formula: `RTT/100 + 5s` (capped at 30s)
 
 ### Advanced Latency Optimizations
 The script includes advanced latency optimizations that are particularly effective on kernels with **Cloudflare patches** (e.g., XanMod). These settings help minimize latency spikes caused by TCP buffer reorganization:
@@ -154,17 +172,38 @@ TCP Initial Congestion Window (initcwnd) and Initial Receive Window (initrwnd) a
 | **Ethernet/Wired** | 40 | 60 | 3s | Stable wired connections |
 | **WiFi/Mobile** | 30 | 40 | 5s | Variable bandwidth & high latency |
 | **VPN/Tunnel** | 20 | 30 | 10s | Encapsulation overhead |
+| **Unknown** | 10 | 10 | RTT-adaptive* | Fallback with RTT-based timing |
+
+*Formula for unknown types: `tcp_fin_timeout = RTT/100 + 5` seconds (max 30s)
 
 ### Buffer Sizing
-Automatically calculates optimal TCP buffers based on 0.2% of your RAM (capped at 4-128MB range):
-- 8GB RAM → ~16MB buffers
-- 16GB RAM → ~32MB buffers
-- 32GB RAM → ~64MB buffers
-- 64GB RAM → 128MB buffers (maximum)
+TCP buffers are automatically calculated based on interface type, available RAM, and measured RTT:
+
+#### Buffer Factors by Interface Type
+| Interface Type | RAM Factor | Min Buffer | Max Buffer | Use Case |
+|---|---|---|---|---|
+| **Ethernet/Wired** | 0.25% | 8MB | 128MB | Maximize throughput |
+| **WiFi** | 0.2% | 4MB | 64MB | Balanced performance |
+| **Mobile (GSM/CDMA)** | 0.15% | 2MB | 32MB | Variable bandwidth |
+| **VPN/Tunnels** | 0.15% | 4MB | 32MB | Reduce encapsulation overhead |
+| **Unknown (RTT-based)** | Adaptive | 2-8MB | 16-128MB | Auto-adjust per latency |
+
+#### RTT-Based Buffer Adjustment (for unknown interfaces)
+| RTT | Buffer Factor | Max Buffer | Scenario |
+|---|---|---|---|
+| **< 10ms** | 0.25% | 128MB | Local/Fast LAN |
+| **10-50ms** | 0.2% | 64MB | Good connection |
+| **50-200ms** | 0.15% | 32MB | Wireless/Distant |
+| **> 200ms** | 0.1% | 16MB | High latency/Satellite |
+
+**Examples**:
+- 8GB RAM + Ethernet → ~16-20MB buffers
+- 8GB RAM + WiFi → ~13-16MB buffers
+- 8GB RAM + Mobile → ~10-13MB buffers
+- 8GB RAM + VPN → ~10-13MB buffers
 
 ## Compatibility
 
-Tested on:
 - ✅ Ubuntu 20.04+, 22.04, 24.04
 - ✅ Debian 11+, 12
 - ✅ Fedora 33+
