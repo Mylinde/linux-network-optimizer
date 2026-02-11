@@ -4,10 +4,11 @@ Automatic network performance optimization for Linux systems using NetworkManage
 
 ## Features
 
-- ✅ **TCP Fast Open**: Optimized `initcwnd 40` and `initrwnd 60` for faster connection establishment
+- ✅ **TCP Fast Open**: Optimized `initcwnd` and `initrwnd` for faster connection establishment (interface-adaptive)
+- ✅ **BBR Congestion Control**: Google's BBR algorithm for improved throughput and latency
 - ✅ **CAKE QDisc**: Advanced queue management for reduced bufferbloat
 - ✅ **Smart Routing**: Static routes with DHCP fallback (metric-based priority)
-- ✅ **RAM-Adaptive Buffers**: TCP buffers automatically scale with available memory (0.2% of RAM, 4-64MB)
+- ✅ **RAM-Adaptive Buffers**: TCP buffers automatically scale with available memory (0.2% of RAM, 4-128MB)
 - ✅ **Auto-Recovery**: Survives DHCP renewals and network changes
 - ✅ **IPv4 & IPv6**: Full dual-stack support
 
@@ -68,13 +69,14 @@ tc qdisc show dev wlan0 | grep cake
 # Check TCP settings
 sysctl net.ipv4.tcp_slow_start_after_idle  # Should be: 0
 sysctl net.ipv4.tcp_notsent_lowat          # Should be: 131072
+sysctl net.ipv4.tcp_congestion_control     # Should be: bbr
 sysctl net.core.default_qdisc              # Should be: cake
 ```
 
 ## How It Works
 
 ### Routing Strategy
-1. **Static Route (Metric 500)**: Your optimized route with `initcwnd 40` and `initrwnd 60`
+1. **Static Route (Metric 500)**: Your optimized route with adaptive `initcwnd` and `initrwnd`
 2. **DHCP Route (Metric 600)**: Automatic fallback if script fails
 
 Lower metric = higher priority, so your optimized route is always preferred while maintaining a safety net.
@@ -84,12 +86,23 @@ Lower metric = higher priority, so your optimized route is always preferred whil
 - `tcp_notsent_lowat=131072`: Better pacing for small writes
 - `tcp_fin_timeout=3`: Faster connection closure
 - `tcp_tw_reuse=1`: Reuse TIME_WAIT sockets
+- `tcp_congestion_control=bbr`: BBR congestion control for improved performance
+
+### Adaptive TCP Fast Open
+TCP Initial Congestion Window (initcwnd) and Initial Receive Window (initrwnd) are automatically adjusted based on interface type:
+
+| Interface Type | initcwnd | initrwnd | Optimized For |
+|---|---|---|---|
+| **Ethernet/Wired** | 40 | 60 | Stable wired connections |
+| **WiFi/Mobile** | 30 | 40 | Variable bandwidth & high latency |
+| **VPN/Tunnel** | 20 | 30 | Encapsulation overhead |
 
 ### Buffer Sizing
-Automatically calculates optimal TCP buffers based on 0.2% of your RAM:
+Automatically calculates optimal TCP buffers based on 0.2% of your RAM (capped at 128MB):
 - 8GB RAM → ~16MB buffers
 - 16GB RAM → ~32MB buffers
-- 32GB RAM → 64MB buffers (capped)
+- 32GB RAM → ~64MB buffers
+- 64GB RAM → 128MB buffers (maximum)
 
 ## Compatibility
 
