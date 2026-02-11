@@ -79,9 +79,26 @@ case "$INTERFACE_TYPE" in
     vpn|wireguard|ip-tunnel|tun|pppoe)
         TCP_FIN_TIMEOUT=10
         ;;
-    # Default
+    # Default - measure RTT for unknown interface types
     *)
-        TCP_FIN_TIMEOUT=3
+        if [ -n "$GATEWAY" ]; then
+            # Get average RTT in milliseconds (field $5 from ping output)
+            RTT=$(ping -c 3 -W 1 -q "$GATEWAY" 2>/dev/null | awk -F'/' '/^rtt/ {print int($5)}')
+            
+            if [ -n "$RTT" ] && [ "$RTT" -gt 100 ]; then
+                # Formula: RTT/100 + 5s (e.g., 200ms RTT → 7s timeout)
+                TCP_FIN_TIMEOUT=$((RTT / 100 + 5))
+                
+                # Cap at 30 seconds
+                [ "$TCP_FIN_TIMEOUT" -gt 30 ] && TCP_FIN_TIMEOUT=30
+            else
+                # Low RTT or measurement failed - use conservative default
+                TCP_FIN_TIMEOUT=5
+            fi
+        else
+            # No gateway available - use safe default
+            TCP_FIN_TIMEOUT=5
+        fi
         ;;
 esac
 
@@ -97,23 +114,96 @@ if [ "$ACTION" = "up" ]; then
     sysctl -q -w net.ipv4.tcp_tw_reuse=1
     sysctl -q -w net.core.default_qdisc=cake
 
-    # RAM-based TCP buffer calculation
-    TOTAL_RAM_BYTES=$(free -b | awk '/^Mem:/{print $2}')
-    FACTOR="0.002"
+# =============================================================================================
+# Adaptive Buffer Sizing based on Interface Type and Available RAM
+# ---------------------------------------------------------------------------------------------
+# Buffer sizes are adjusted based on interface characteristics:
+# - High-speed wired: Larger buffers for bulk transfers
+# - Wireless/Mobile: Moderate buffers to handle variable bandwidth
+# - VPN/Tunnels: Smaller buffers due to encapsulation overhead
+# - Unknown: Conservative sizing with RTT consideration
+# =============================================================================================
+
+# Get total system RAM
+TOTAL_RAM_BYTES=$(free -b | awk '/^Mem:/{print $2}')
+
+# Set buffer factor based on interface type
+case "$INTERFACE_TYPE" in
+    # High-speed wired connections - maximize throughput
+    ethernet|bond|team|bridge|vlan|infiniband|ovs-bridge|ovs-interface|ovs-port)
+        BUFFER_FACTOR="0.0025"  # 0.25% of RAM
+        MIN_BUFFER=8388608      # 8MB minimum
+        MAX_BUFFER=134217728    # 128MB maximum
+        ;;
     
-    # Calculate maximum value (requires bc for floating point math)
-    # Ensures minimum of 4MB and maximum of 128MB
-    RMEM_MAX=$(echo "$TOTAL_RAM_BYTES * $FACTOR" | bc -l | cut -d. -f1)
+    # Wireless/Mobile - balance between throughput and memory
+    wifi|bluetooth)
+        BUFFER_FACTOR="0.002"   # 0.2% of RAM
+        MIN_BUFFER=4194304      # 4MB minimum
+        MAX_BUFFER=67108864     # 64MB maximum
+        ;;
     
-    # Sanity checks (set limits)
-    [ "$RMEM_MAX" -lt 4194304 ] && RMEM_MAX=4194304   # Lower limit 4MB
-    [ "$RMEM_MAX" -gt 134217728 ] && RMEM_MAX=134217728 # Upper limit 128MB
+    # Mobile data - conservative due to variable bandwidth
+    gsm|cdma|wimax)
+        BUFFER_FACTOR="0.0015"  # 0.15% of RAM
+        MIN_BUFFER=2097152      # 2MB minimum
+        MAX_BUFFER=33554432     # 32MB maximum
+        ;;
     
-    # Apply calculated values
-    sysctl -q -w net.core.rmem_max="$RMEM_MAX"
-    sysctl -q -w net.core.wmem_max="$RMEM_MAX"
-    sysctl -q -w net.ipv4.tcp_rmem="4096 87380 $RMEM_MAX"
-    sysctl -q -w net.ipv4.tcp_wmem="4096 65536 $RMEM_MAX"
+    # VPN/Tunnels - smaller buffers due to encapsulation overhead
+    vpn|wireguard|ip-tunnel|tun|pppoe)
+        BUFFER_FACTOR="0.0015"  # 0.15% of RAM
+        MIN_BUFFER=4194304      # 4MB minimum
+        MAX_BUFFER=33554432     # 32MB maximum
+        ;;
+    
+    # Unknown interface types - adaptive based on RTT
+    *)
+        # Default conservative values
+        BUFFER_FACTOR="0.002"
+        MIN_BUFFER=4194304
+        MAX_BUFFER=67108864
+        
+        # Adjust based on measured RTT if gateway is available
+        if [ -n "$GATEWAY" ]; then
+            RTT=$(ping -c 3 -W 1 -q "$GATEWAY" 2>/dev/null | awk -F'/' '/^rtt/ {print int($5)}')
+            
+            if [ -n "$RTT" ]; then
+                if [ "$RTT" -lt 10 ]; then
+                    # Very low latency - likely local/fast connection
+                    BUFFER_FACTOR="0.0025"
+                    MAX_BUFFER=134217728  # 128MB
+                elif [ "$RTT" -lt 50 ]; then
+                    # Low latency - good connection
+                    BUFFER_FACTOR="0.002"
+                    MAX_BUFFER=67108864   # 64MB
+                elif [ "$RTT" -lt 200 ]; then
+                    # Medium latency - wireless/distant
+                    BUFFER_FACTOR="0.0015"
+                    MAX_BUFFER=33554432   # 32MB
+                else
+                    # High latency - satellite/congested
+                    BUFFER_FACTOR="0.001"
+                    MIN_BUFFER=2097152    # 2MB
+                    MAX_BUFFER=16777216   # 16MB
+                fi
+            fi
+        fi
+        ;;
+esac
+
+# Calculate buffer size based on RAM and factor
+RMEM_MAX=$(echo "$TOTAL_RAM_BYTES * $BUFFER_FACTOR" | bc -l | cut -d. -f1)
+
+# Apply min/max limits
+[ "$RMEM_MAX" -lt "$MIN_BUFFER" ] && RMEM_MAX="$MIN_BUFFER"
+[ "$RMEM_MAX" -gt "$MAX_BUFFER" ] && RMEM_MAX="$MAX_BUFFER"
+
+# Apply calculated values
+sysctl -q -w net.core.rmem_max="$RMEM_MAX"
+sysctl -q -w net.core.wmem_max="$RMEM_MAX"
+sysctl -q -w net.ipv4.tcp_rmem="4096 87380 $RMEM_MAX"
+sysctl -q -w net.ipv4.tcp_wmem="4096 65536 $RMEM_MAX"
 
     # =============================================================================================
     # Advanced Latency Optimizations
