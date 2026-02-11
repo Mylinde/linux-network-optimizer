@@ -20,13 +20,29 @@ case "$ACTION" in
         ;;
 esac
 
-# Adjust initial congestion/receive windows based on interface type (WLAN: conservative, Ethernet: aggressive)
-case "$INTERFACE" in
-    wl*|wlan*)
+# Determine CONNECTION from the passed interface
+CONNECTION=$(nmcli -g GENERAL.CONNECTION device show "$INTERFACE" 2>/dev/null)
+
+# Exit if no interface or connection
+if [ -z "$INTERFACE" ] || [ -z "$CONNECTION" ]; then
+    exit 0
+fi
+
+# Detect interface type via NetworkManager device type
+INTERFACE_TYPE=$(LC_ALL=C nmcli -g GENERAL.TYPE device show "$INTERFACE" 2>/dev/null)
+
+# Determine gateway and IP
+GATEWAY=$(ip route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
+GATEWAY6=$(ip -6 route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
+IP=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+
+# Interface-specific TCP parameters (WLAN: conservative, Ethernet: aggressive)
+case "$INTERFACE_TYPE" in
+    wifi|wireless)
         INITCWND=30
         INITRWND=40
         ;;
-    en*|eth*)
+    ethernet)
         INITCWND=40
         INITRWND=60
         ;;
@@ -35,19 +51,6 @@ case "$INTERFACE" in
         INITRWND=40
         ;;
 esac
-
-# Determine CONNECTION from the passed interface
-CONNECTION=$(nmcli -g GENERAL.CONNECTION device show "$INTERFACE" 2>/dev/null)
-
-# Determine gateway and IP
-GATEWAY=$(ip route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
-GATEWAY6=$(ip -6 route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
-IP=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
-
-# Exit if no interface or connection
-if [ -z "$INTERFACE" ] || [ -z "$CONNECTION" ]; then
-    exit 0
-fi
 
 # Activate CAKE QDisc
 tc qdisc replace dev "$INTERFACE" root cake 2>/dev/null
