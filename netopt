@@ -35,6 +35,7 @@ INTERFACE_TYPE=$(LC_ALL=C nmcli -g GENERAL.TYPE device show "$INTERFACE" 2>/dev/
 GATEWAY=$(ip route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
 GATEWAY6=$(ip -6 route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
 IP=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+IP6=$(ip -6 addr show dev "$INTERFACE" scope global 2>/dev/null | grep -oP '(?<=inet6\s)[0-9a-f:]+' | head -n 1)
 
 # Interface-specific TCP parameters
 case "$INTERFACE_TYPE" in
@@ -64,6 +65,26 @@ case "$INTERFACE_TYPE" in
         ;;
 esac
 
+# Interface-specific TCP fin_timeout
+case "$INTERFACE_TYPE" in
+    # Wired connections - fast closure
+    ethernet|bond|team|bridge|vlan|infiniband|ovs-bridge|ovs-interface|ovs-port)
+        TCP_FIN_TIMEOUT=3
+        ;;
+    # Wireless - slightly more tolerant
+    wifi|gsm|cdma|bluetooth|wimax)
+        TCP_FIN_TIMEOUT=5
+        ;;
+    # VPN/Tunnels - more time for closure
+    vpn|wireguard|ip-tunnel|tun|pppoe)
+        TCP_FIN_TIMEOUT=10
+        ;;
+    # Default
+    *)
+        TCP_FIN_TIMEOUT=3
+        ;;
+esac
+
 # Activate CAKE QDisc
 tc qdisc replace dev "$INTERFACE" root cake 2>/dev/null
 
@@ -72,7 +93,7 @@ if [ "$ACTION" = "up" ]; then
     sysctl -q -w net.ipv4.tcp_slow_start_after_idle=0
     sysctl -q -w net.ipv4.tcp_congestion_control=bbr 
     sysctl -q -w net.ipv4.tcp_notsent_lowat=131072
-    sysctl -q -w net.ipv4.tcp_fin_timeout=3
+    sysctl -q -w net.ipv4.tcp_fin_timeout=$TCP_FIN_TIMEOUT
     sysctl -q -w net.ipv4.tcp_tw_reuse=1
     sysctl -q -w net.core.default_qdisc=cake
 
@@ -123,14 +144,42 @@ fi
 
 # Optimize IPv6 route
 if [ -n "$GATEWAY6" ] && [ "$GATEWAY6" != "--" ]; then
-    if [ "$ACTION" = "up" ]; then
-        nmcli con mod "$CONNECTION" ipv6.route-metric 600
-        nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null
-    fi
-    
-    # Only add static IPv6 route if not present
-    if ! ip -6 route show | grep -q "default via $GATEWAY6 dev $INTERFACE proto static.*initcwnd $INITCWND"; then
-        ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" proto static metric 500 initcwnd $INITCWND initrwnd $INITRWND pref high
+    # Validate IPv6 gateway format
+    if [[ "$GATEWAY6" =~ ^[0-9a-f:]+$ ]]; then
+        # Valid IPv6 format - check if it's a routable address
+        case "$GATEWAY6" in
+            fe80:*)
+                # Link-local address - valid for IPv6 gateway
+                VALID_IPV6=1
+                ;;
+            2000:*|2001:*|2002:*|2003:*|2004:*|2005:*|2006:*|2007:*|2008:*|2009:*|200a:*|200b:*|200c:*|200d:*|200e:*|200f:*|3*)
+                # Global unicast address (2000::/3 range)
+                VALID_IPV6=1
+                ;;
+            *)
+                # Invalid or reserved range
+                VALID_IPV6=0
+                ;;
+        esac
+        
+        # Only proceed if IPv6 gateway is valid
+        if [ "$VALID_IPV6" = "1" ]; then
+            if [ "$ACTION" = "up" ]; then
+                nmcli con mod "$CONNECTION" ipv6.route-metric 600
+                nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null
+            fi
+            
+            # Only add static IPv6 route if not present
+            if ! ip -6 route show | grep -q "default via $GATEWAY6 dev $INTERFACE proto static.*initcwnd $INITCWND"; then
+                # Use global IPv6 address if available
+                if [ -n "$IP6" ]; then
+                    ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" proto static src "$IP6" metric 500 initcwnd $INITCWND initrwnd $INITRWND pref high
+                else
+                    # For link-local gateways, add route without src
+                    ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" proto static metric 500 initcwnd $INITCWND initrwnd $INITRWND pref high
+                fi
+            fi
+        fi
     fi
 fi
 

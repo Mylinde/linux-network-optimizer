@@ -8,9 +8,10 @@ Automatic network performance optimization for Linux systems using NetworkManage
 - ✅ **BBR Congestion Control**: Google's BBR algorithm for improved throughput and latency
 - ✅ **CAKE QDisc**: Advanced queue management for reduced bufferbloat
 - ✅ **Smart Routing**: Static routes with DHCP fallback (metric-based priority)
+- ✅ **Dual-Stack Support**: Full IPv4 & IPv6 optimization with automatic gateway validation
 - ✅ **RAM-Adaptive Buffers**: TCP buffers automatically scale with available memory (0.2% of RAM, 4-128MB)
 - ✅ **Auto-Recovery**: Survives DHCP renewals and network changes
-- ✅ **IPv4 & IPv6**: Full dual-stack support
+- ✅ **Interface-Adaptive Settings**: TCP parameters automatically adjust based on connection type
 
 ## Performance Improvements
 
@@ -56,12 +57,19 @@ sudo systemctl restart NetworkManager
 ## Verify Installation
 
 ```bash
-# Check routes (after reconnecting)
+# Check IPv4 routes (after reconnecting)
 ip route show default
 
 # Expected output:
 # default via X.X.X.X dev wlan0 proto static metric 500 initcwnd 40 initrwnd 60
 # default via X.X.X.X dev wlan0 proto dhcp metric 600  (fallback)
+
+# Check IPv6 routes
+ip -6 route show default
+
+# Expected output:
+# default via XXXX:XXXX::1 dev wlan0 proto static metric 500 initcwnd 30 initrwnd 40 pref high
+# default via XXXX:XXXX::1 dev wlan0 proto dhcp metric 600  (fallback)
 
 # Check CAKE QDisc
 tc qdisc show dev wlan0 | grep cake
@@ -70,21 +78,60 @@ tc qdisc show dev wlan0 | grep cake
 sysctl net.ipv4.tcp_slow_start_after_idle  # Should be: 0
 sysctl net.ipv4.tcp_notsent_lowat          # Should be: 131072
 sysctl net.ipv4.tcp_congestion_control     # Should be: bbr
+sysctl net.ipv4.tcp_adv_win_scale          # Should be: -2
 sysctl net.core.default_qdisc              # Should be: cake
 ```
 
 ## How It Works
 
 ### Routing Strategy
-1. **Static Route (Metric 500)**: Your optimized route with adaptive `initcwnd` and `initrwnd`
-2. **DHCP Route (Metric 600)**: Automatic fallback if script fails
+The script implements a **dual-route system** with automatic failover protection:
 
-Lower metric = higher priority, so your optimized route is always preferred while maintaining a safety net.
+#### IPv4 Routing
+1. **Static Route (Metric 500)**: Your optimized route with adaptive `initcwnd` and `initrwnd`
+   - Applied by the script with lower metric = higher priority
+   - Carries TCP Fast Open optimizations tailored to your interface type
+   - Uses your current IP as source
+
+2. **DHCP Route (Metric 600)**: Automatic fallback route
+   - Managed by NetworkManager with higher metric = lower priority
+   - Only used if the static route fails or is unavailable
+   - Automatically restored during DHCP renewals (`ipv4.route-metric 600`)
+   - Safety net: ensures connectivity even if script fails
+
+**How it works**: Linux always prefers lower metric values. If your optimized static route becomes unavailable, the system automatically falls back to the DHCP route.
+
+#### IPv6 Routing
+1. **Static Route (Metric 500)**: IPv6 optimized with `pref high` priority flag
+   - Validates IPv6 gateway format (checks for valid unicast ranges)
+   - Supports both link-local (`fe80::/10`) and global unicast (`2000::/3`) gateways
+   - Automatically selects source address if global IPv6 is available
+   - Sets `ipv6.may-fail no` to prevent fallback unless necessary
+
+2. **DHCP6 Route (Metric 600)**: DHCPv6 fallback with metric-based priority
+
+**IPv6 Gateway Validation**:
+- ✅ Link-local addresses: `fe80:*`
+- ✅ Global unicast: `2000:*` through `3fff:*` (RFC-compliant)
+- ❌ Invalid or reserved ranges are automatically rejected
+
+```bash
+# View both IPv4 and IPv6 routes in priority order
+ip route show default && echo "---" && ip -6 route show default
+
+# Expected IPv4 output:
+# default via 192.168.1.1 dev wlan0 proto static metric 500 initcwnd 40 initrwnd 60
+# default via 192.168.1.1 dev wlan0 proto dhcp metric 600
+
+# Expected IPv6 output:
+# default via 2001:db8::1 dev wlan0 proto static metric 500 initcwnd 30 initrwnd 40 pref high
+# default via 2001:db8::1 dev wlan0 proto dhcp metric 600
+```
 
 ### TCP Parameters
 - `tcp_slow_start_after_idle=0`: No slowdown after idle connections
 - `tcp_notsent_lowat=131072`: Better pacing for small writes
-- `tcp_fin_timeout=3`: Faster connection closure
+- `tcp_fin_timeout`: Interface-adaptive (3s for wired, 5s for wireless, 10s for VPN)
 - `tcp_tw_reuse=1`: Reuse TIME_WAIT sockets
 - `tcp_congestion_control=bbr`: BBR congestion control for improved performance
 
@@ -102,14 +149,14 @@ These optimizations are automatically applied and work on standard kernels, but 
 ### Adaptive TCP Fast Open
 TCP Initial Congestion Window (initcwnd) and Initial Receive Window (initrwnd) are automatically adjusted based on interface type:
 
-| Interface Type | initcwnd | initrwnd | Optimized For |
-|---|---|---|---|
-| **Ethernet/Wired** | 40 | 60 | Stable wired connections |
-| **WiFi/Mobile** | 30 | 40 | Variable bandwidth & high latency |
-| **VPN/Tunnel** | 20 | 30 | Encapsulation overhead |
+| Interface Type | initcwnd | initrwnd | tcp_fin_timeout | Optimized For |
+|---|---|---|---|---|
+| **Ethernet/Wired** | 40 | 60 | 3s | Stable wired connections |
+| **WiFi/Mobile** | 30 | 40 | 5s | Variable bandwidth & high latency |
+| **VPN/Tunnel** | 20 | 30 | 10s | Encapsulation overhead |
 
 ### Buffer Sizing
-Automatically calculates optimal TCP buffers based on 0.2% of your RAM (capped at 128MB):
+Automatically calculates optimal TCP buffers based on 0.2% of your RAM (capped at 4-128MB range):
 - 8GB RAM → ~16MB buffers
 - 16GB RAM → ~32MB buffers
 - 32GB RAM → ~64MB buffers
@@ -138,11 +185,12 @@ sudo systemctl restart NetworkManager
 
 ### No internet after installation
 ```bash
-# Check if static route exists
-ip route show default
+# Check if static routes exist
+ip route show default && echo "---" && ip -6 route show default
 
-# Manually add fallback DHCP route
+# Manually restore DHCP routes
 sudo dhclient -r && sudo dhclient
+sudo dhclient -6 -r && sudo dhclient -6
 ```
 
 ### CAKE not working
@@ -164,6 +212,20 @@ journalctl -u NetworkManager -f
 
 # Manual test
 sudo /etc/NetworkManager/dispatcher.d/99-netopt wlan0 up
+```
+
+### IPv6 routes not appearing
+```bash
+# Check if IPv6 is enabled on interface
+ip -6 addr show dev wlan0
+
+# Check IPv6 connectivity
+ip -6 route show
+ping -6 2001:4860:4860::8888  # Google's public DNS
+
+# Enable IPv6 if needed
+sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
+sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
 ```
 
 ## Contributing
