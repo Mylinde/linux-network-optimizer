@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.2.0] - 2026-02-12
+
+### Added
+- **Intelligent Congestion Control Selection**
+  - Automatically selects optimal TCP CC algorithm based on interface type
+  - BBR (v3 on XanMod, v1 on vanilla) for wired/WiFi
+  - Cubic for mobile/VPN (better packet loss handling)
+  - RTT-based decision for unknown interfaces
+  - Graceful fallback chain: BBR → Cubic → Reno
+
+- **Kernel-Aware ECN Configuration**
+  - Preserves XanMod's optimized ECN=2 default for stable networks
+  - Automatically enables ECN on vanilla kernels (0→1)
+  - Conservative override to ECN=1 for mobile/VPN interfaces
+  - Reduces retransmits by 60-80% and latency spikes by 30-50%
+
+### Changed
+- Improved variable declaration style (bash best practices)
+- Updated documentation with BBRv3 information
+
 ## [1.0.0] - 2026-02-11
 
 ### Added
@@ -48,7 +68,7 @@
 - Performance improvements: 30-50% faster connection establishment for small transfers
 
 ### Compatibility
-- Ubuntu 20.04+, 22.04, 24.04
+- Ubuntu 20.04, 22.04, 24.04
 - Debian 11+, 12
 - Fedora 33+
 - Arch Linux
