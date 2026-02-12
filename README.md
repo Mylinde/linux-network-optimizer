@@ -6,18 +6,20 @@ Automatic network performance optimization for Linux systems using NetworkManage
 
 - ✅ **TCP Fast Open**: Optimized `initcwnd` and `initrwnd` for faster connection establishment (interface-adaptive)
 - ✅ **BBR Congestion Control**: Google's BBR algorithm for improved throughput and latency
+- ✅ **Intelligent Congestion Control**: Automatic selection between BBR (low loss) and CUBIC (high loss scenarios)
 - ✅ **CAKE QDisc**: Advanced queue management for reduced bufferbloat
 - ✅ **Smart Routing**: Static routes with DHCP fallback (metric-based priority)
 - ✅ **Dual-Stack Support**: Full IPv4 & IPv6 optimization with automatic gateway validation
-- ✅ **RAM-Adaptive Buffers**: TCP buffers automatically scale with available memory (0.2% of RAM, 4-128MB)
+- ✅ **RAM-Adaptive Buffers**: TCP buffers automatically scale with available memory and RTT
 - ✅ **Auto-Recovery**: Survives DHCP renewals and network changes
-- ✅ **Interface-Adaptive Settings**: TCP parameters automatically adjust based on connection type
+- ✅ **Interface-Adaptive Settings**: TCP parameters automatically adjust based on connection type and RTT
 
 ## Performance Improvements
 
 - ⚡ **30-50% faster** connection establishment for small transfers
 - ⚡ **Reduced latency** during high network load (bufferbloat mitigation)
 - ⚡ **Better bandwidth utilization** through optimized TCP parameters
+- ⚡ **Automatic failover** to CUBIC on high-loss networks for improved reliability
 
 ## Requirements
 
@@ -25,6 +27,7 @@ Automatic network performance optimization for Linux systems using NetworkManage
 - Linux with **NetworkManager**
 - `iproute2` package
 - `bc` (basic calculator) - for RAM-based buffer calculations
+- `ss` command (part of `iproute2`) - for RTT measurement
 - Kernel with **CAKE qdisc** support (Linux 4.19+)
 
 ### Installation Check
@@ -36,6 +39,9 @@ which bc || sudo pacman -S bc    # Arch Linux
 
 # Check CAKE support
 tc qdisc add dev lo root cake 2>/dev/null && echo "CAKE supported" && tc qdisc del dev lo root
+
+# Check ss command
+which ss && echo "ss available"
 ```
 
 ## Quick Install
@@ -74,11 +80,14 @@ ip -6 route show default
 # Check CAKE QDisc
 tc qdisc show dev wlan0 | grep cake
 
+# Check congestion control
+sysctl net.ipv4.tcp_congestion_control  # Should be: bbr or cubic (auto-selected)
+
 # Check TCP settings
 sysctl net.ipv4.tcp_slow_start_after_idle  # Should be: 0
 sysctl net.ipv4.tcp_notsent_lowat          # Should be: 131072
-sysctl net.ipv4.tcp_congestion_control     # Should be: bbr
 sysctl net.ipv4.tcp_adv_win_scale          # Should be: -2
+sysctl net.ipv4.tcp_collapse_max_bytes     # Should be: 6291456
 sysctl net.core.default_qdisc              # Should be: cake
 ```
 
@@ -133,9 +142,29 @@ ip route show default && echo "---" && ip -6 route show default
 - `tcp_notsent_lowat=131072`: Better pacing for small writes
 - `tcp_fin_timeout`: Interface-adaptive (3s wired, 5s wireless, 10s VPN; RTT-based for unknown types)
 - `tcp_tw_reuse=1`: Reuse TIME_WAIT sockets
-- `tcp_congestion_control=bbr`: BBR congestion control for improved performance
+- `tcp_congestion_control`: Auto-selected BBR or CUBIC based on interface type and packet loss
 - `tcp_adv_win_scale=-2`: Overhead protection to prevent buffer bloat
 - `tcp_collapse_max_bytes=6291456`: Collapse limit for better latency handling
+
+### Intelligent Congestion Control Selection
+The script automatically selects the optimal TCP congestion control algorithm:
+
+**Selection Strategy**:
+- **BBR (Bottleneck Bandwidth and RTT)**: Default choice for most scenarios
+  - Optimal for: Wired connections, low packet loss, modern networks
+  - BBRv3 on XanMod kernels (better fairness)
+  - BBRv1 on vanilla kernels
+  
+- **CUBIC (Loss-based)**: Automatic fallback for high packet loss
+  - Used for: WiFi, mobile networks, satellite (>1% packet loss detected)
+  - Better recovery from retransmissions
+  - More conservative bandwidth probing
+
+**Detection Logic**:
+- Wired/Ethernet → BBR
+- WiFi/Mobile/GSM/CDMA → CUBIC (handles variable loss better)
+- VPN/Tunnels → CUBIC (encapsulation adds loss overhead)
+- Unknown types → RTT-based: BBR for RTT < 50ms, CUBIC for RTT > 50ms
 
 ### RTT Measurement Strategy
 The script efficiently measures RTT (Round-Trip Time) for adaptive optimizations:
@@ -147,11 +176,13 @@ The script efficiently measures RTT (Round-Trip Time) for adaptive optimizations
 
 2. **Fallback Method**: `ping` to gateway (only if no connections exist)
    - Fast interval (0.2s) for quicker measurement
-   - 3 packets with 1s timeout
+   - 3 packets with 1s timeout per packet
 
 **RTT Usage**:
-- **Buffer Sizing**: Adapts max buffers based on latency (see table below)
+- **Buffer Sizing**: Adapts max buffers based on latency
 - **TCP FIN Timeout**: For unknown interfaces, uses formula: `RTT/100 + 5s` (capped at 30s)
+- **Congestion Control**: Selects CUBIC for high-latency networks
+- **Measured once**: RTT is centralized and reused across all optimizations (performance!)
 
 ### Advanced Latency Optimizations
 The script includes advanced latency optimizations that are particularly effective on kernels with **Cloudflare patches** (e.g., XanMod). These settings help minimize latency spikes caused by TCP buffer reorganization:
@@ -167,14 +198,15 @@ These optimizations are automatically applied and work on standard kernels, but 
 ### Adaptive TCP Fast Open
 TCP Initial Congestion Window (initcwnd) and Initial Receive Window (initrwnd) are automatically adjusted based on interface type:
 
-| Interface Type | initcwnd | initrwnd | tcp_fin_timeout | Optimized For |
-|---|---|---|---|---|
-| **Ethernet/Wired** | 40 | 60 | 3s | Stable wired connections |
-| **WiFi/Mobile** | 30 | 40 | 5s | Variable bandwidth & high latency |
-| **VPN/Tunnel** | 20 | 30 | 10s | Encapsulation overhead |
-| **Unknown** | 10 | 10 | RTT-adaptive* | Fallback with RTT-based timing |
+| Interface Type | initcwnd | initrwnd | tcp_fin_timeout | Congestion Control | Optimized For |
+|---|---|---|---|---|---|
+| **Ethernet/Wired** | 40 | 60 | 3s | BBR | Stable, low-loss connections |
+| **WiFi/Mobile** | 30 | 40 | 5s | CUBIC | Variable bandwidth & packet loss |
+| **VPN/Tunnel** | 20 | 30 | 10s | CUBIC | Encapsulation overhead |
+| **Unknown** | 10 | 10 | RTT-adaptive* | RTT-adaptive** | Fallback with auto-detection |
 
 *Formula for unknown types: `tcp_fin_timeout = RTT/100 + 5` seconds (max 30s)
+**BBR if RTT < 50ms, CUBIC if RTT ≥ 50ms
 
 ### Buffer Sizing
 TCP buffers are automatically calculated based on interface type, available RAM, and measured RTT:
@@ -197,13 +229,15 @@ TCP buffers are automatically calculated based on interface type, available RAM,
 | **> 200ms** | 0.1% | 16MB | High latency/Satellite |
 
 **Examples**:
-- 8GB RAM + Ethernet → ~16-20MB buffers
-- 8GB RAM + WiFi → ~13-16MB buffers
-- 8GB RAM + Mobile → ~10-13MB buffers
-- 8GB RAM + VPN → ~10-13MB buffers
+- 8GB RAM + Ethernet → ~16-20MB buffers + BBR
+- 8GB RAM + WiFi → ~13-16MB buffers + CUBIC
+- 8GB RAM + Mobile → ~10-13MB buffers + CUBIC
+- 8GB RAM + VPN → ~10-13MB buffers + CUBIC
+- 8GB RAM + Unknown (RTT 150ms) → ~15-20MB buffers + CUBIC
 
 ## Compatibility
 
+Tested on:
 - ✅ Ubuntu 20.04+, 22.04, 24.04
 - ✅ Debian 11+, 12
 - ✅ Fedora 33+
@@ -253,6 +287,18 @@ journalctl -u NetworkManager -f
 sudo /etc/NetworkManager/dispatcher.d/99-netopt wlan0 up
 ```
 
+### Wrong congestion control selected
+```bash
+# Check current setting
+sysctl net.ipv4.tcp_congestion_control
+
+# Verify via logs (check if WiFi detected correctly)
+journalctl -u NetworkManager -f | grep -i "congestion\|cubic\|bbr"
+
+# Manual override (if needed)
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
+```
+
 ### IPv6 routes not appearing
 ```bash
 # Check if IPv6 is enabled on interface
@@ -265,6 +311,15 @@ ping -6 2001:4860:4860::8888  # Google's public DNS
 # Enable IPv6 if needed
 sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
 sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+```
+
+### High RTT detected - using conservative buffers
+```bash
+# Check detected RTT
+ss -tmi state established | grep rtt
+
+# If RTT > 200ms, buffers will be smaller to avoid excessive queue buildup
+# This is expected behavior - lower buffers = lower latency on high-RTT links
 ```
 
 ## Contributing
