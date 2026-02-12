@@ -1,4 +1,5 @@
 #!/bin/bash
+set -Eeuo pipefail
 # =============================================================================================
 # Linux Network Optimizer
 # Automatic network performance optimization for Linux systems using NetworkManager dispatcher.
@@ -19,6 +20,19 @@ case "$ACTION" in
         exit 0
         ;;
 esac
+
+LOCK_FILE="/var/lock/netopt-${INTERFACE}.lock"
+LOCK_FD=200
+
+# Acquire lock
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "Another instance is running for $INTERFACE, waiting..." >&2
+    flock 200  # Block until lock is free
+fi
+
+# Cleanup lock on exit
+trap "flock -u 200; rm -f $LOCK_FILE" EXIT
 
 # Determine CONNECTION from the passed interface
 CONNECTION=$(nmcli -g GENERAL.CONNECTION device show "$INTERFACE" 2>/dev/null)

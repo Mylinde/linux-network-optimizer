@@ -334,6 +334,12 @@ MIT License - see [LICENSE](LICENSE.txt)
 
 Created by [Mylinde](https://github.com/Mylinde)
 
+"Perfection is achieved, not when there is 
+ nothing more to add, but when there is 
+ nothing left to take away."
+
+ - Antoine de Saint-Exupéry
+
 ---
 
 **⚠️ Note**: This script modifies system network settings. Use at your own risk. Always test in a non-production environment first.
