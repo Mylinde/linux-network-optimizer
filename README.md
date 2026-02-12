@@ -291,9 +291,6 @@ sudo /etc/NetworkManager/dispatcher.d/99-netopt wlan0 up
 # Check current setting
 sysctl net.ipv4.tcp_congestion_control
 
-# Verify via logs (check if WiFi detected correctly)
-journalctl -u NetworkManager -f | grep -i "congestion\|cubic\|bbr"
-
 # Manual override (if needed)
 sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
 ```
