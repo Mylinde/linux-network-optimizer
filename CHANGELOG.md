@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.2.0] - 2026-02-12
+## [1.1.0] - 2026-02-12
 
 ### Added
 - **Intelligent Congestion Control Selection**
