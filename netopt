@@ -1,20 +1,34 @@
 #!/bin/bash
-set -Eeuo
+set -Eeu
+
 # =============================================================================================
 # Linux Network Optimizer
 # Automatic network performance optimization for Linux systems using NetworkManager dispatcher.
 # Licensing: MIT
-# Requires: bash, bc
+# Requires: bash, bc, nftables (optional)
 # Copyright (c) 2026 Mario Herrmann. All rights reserved.
 # =============================================================================================
 
 # NetworkManager automatically passes these parameters:
-INTERFACE="$1"
-ACTION="$2"
+INTERFACE="${1:-}"
+ACTION="${2:-}"
+
+# Exit early if no interface specified
+if [ -z "$INTERFACE" ]; then
+    exit 0
+fi
 
 # Only execute on relevant events
 case "$ACTION" in
     up|dhcp4-change|dhcp6-change)
+        ;;
+    down|pre-down)
+        # Cleanup on interface down
+        if command -v nft >/dev/null 2>&1; then
+            TABLE_NAME="netopt_${INTERFACE//-/_}"
+            nft delete table inet "$TABLE_NAME" 2>/dev/null || true
+        fi
+        exit 0
         ;;
     *)
         exit 0
@@ -22,7 +36,6 @@ case "$ACTION" in
 esac
 
 LOCK_FILE="/var/lock/netopt-${INTERFACE}.lock"
-LOCK_FD=200
 
 # Ensure lock directory exists
 mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
@@ -31,14 +44,14 @@ mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
 exec 200>"$LOCK_FILE" 2>/dev/null || exit 0
 if ! flock -n 200 2>/dev/null; then
     echo "Another instance is running for $INTERFACE, waiting..." >&2
-    flock 200 2>/dev/null || exit 0  # Block until free
+    flock 200 2>/dev/null || exit 0
 fi
 
 # Cleanup lock on exit (even on Ctrl+C or kill)
 trap 'flock -u 200 2>/dev/null || true; rm -f "$LOCK_FILE" 2>/dev/null || true' EXIT INT TERM
 
 # Determine CONNECTION from the passed interface
-CONNECTION=$(nmcli -g GENERAL.CONNECTION device show "$INTERFACE" 2>/dev/null)
+CONNECTION=$(nmcli -g GENERAL.CONNECTION device show "$INTERFACE" 2>/dev/null || true)
 
 # Exit if no interface or connection
 if [ -z "$INTERFACE" ] || [ -z "$CONNECTION" ]; then
@@ -46,20 +59,16 @@ if [ -z "$INTERFACE" ] || [ -z "$CONNECTION" ]; then
 fi
 
 # Detect interface type via NetworkManager device type
-INTERFACE_TYPE=$(LC_ALL=C nmcli -g GENERAL.TYPE device show "$INTERFACE" 2>/dev/null)
+INTERFACE_TYPE=$(LC_ALL=C nmcli -g GENERAL.TYPE device show "$INTERFACE" 2>/dev/null || true)
 
-# Determine gateway and IP
-GATEWAY=$(ip route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
-GATEWAY6=$(ip -6 route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1)
-IP=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
-IP6=$(ip -6 addr show dev "$INTERFACE" scope global 2>/dev/null | grep -oP '(?<=inet6\s)[0-9a-f:]+' | head -n 1)
+# Determine gateway and IP (with explicit error handling)
+GATEWAY=$(ip route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1 || true)
+GATEWAY6=$(ip -6 route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1 || true)
+IP=$(ip -4 addr show dev "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1 || true)
+IP6=$(ip -6 addr show dev "$INTERFACE" scope global 2>/dev/null | grep -oP '(?<=inet6\s)[0-9a-f:]+' | head -n 1 || true)
 
 # =============================================================================================
 # RTT Measurement (centralized, measured once)
-# ---------------------------------------------------------------------------------------------
-# Measure RTT from established TCP connections or fallback to ping
-# Used for: TCP_FIN_TIMEOUT, Buffer-Sizing, Congestion Control Selection
-# Performance: ~5ms (ss) vs ~600ms (ping), prefer ss for speed and accuracy
 # =============================================================================================
 
 measure_rtt() {
@@ -69,13 +78,12 @@ measure_rtt() {
     local rtt=""
     
     # Try to get RTT from existing connections first (prefer src IP filter)
-    # This provides real-world TCP RTT from actual data connections
     if [ -n "$src_ip" ]; then
         rtt=$(ss -tmi state established src "$src_ip" 2>/dev/null | awk '/rtt:/ {
             match($0, /rtt:([0-9.]+)/, arr)
             if (arr[1] != "") { sum += arr[1]; count++ }
         }
-        END { if (count > 0) printf "%.0f\n", sum/count; else print "" }')
+        END { if (count > 0) printf "%.0f\n", sum/count; else print "" }' || true)
     fi
     
     # Fallback to device-based filter if src IP failed or unavailable
@@ -84,43 +92,37 @@ measure_rtt() {
             match($0, /rtt:([0-9.]+)/, arr)
             if (arr[1] != "") { sum += arr[1]; count++ }
         }
-        END { if (count > 0) printf "%.0f\n", sum/count; else print "" }')
+        END { if (count > 0) printf "%.0f\n", sum/count; else print "" }' || true)
     fi
     
     # Fallback to ping only if no established connections exist
-    # Use fast interval (0.2s) for quicker measurement
     if [ -z "$rtt" ] && [ -n "$gateway" ]; then
-        rtt=$(ping -c 3 -W 1 -i 0.2 -q "$gateway" 2>/dev/null | awk -F'/' '/^rtt/ {print int($5)}')
+        rtt=$(ping -c 3 -W 1 -i 0.2 -q "$gateway" 2>/dev/null | awk -F'/' '/^rtt/ {print int($5)}' || true)
     fi
     
     echo "$rtt"
 }
 
-# Measure RTT once for all optimizations (avoids duplicate measurements)
+# Measure RTT once for all optimizations
 MEASURED_RTT=$(measure_rtt "$INTERFACE" "$GATEWAY" "$IP")
 
 # Interface-specific TCP parameters
 case "$INTERFACE_TYPE" in
-    # High-speed wired connections - low latency/loss
     ethernet|bond|team|bridge|vlan|infiniband|ovs-bridge|ovs-interface|ovs-port)
         INITCWND=40
         INITRWND=60
         ;;
-    # Wireless/Mobile connections - higher latency/loss
     wifi|gsm|cdma|bluetooth|wimax)
         INITCWND=30
         INITRWND=40
         ;;
-    # VPN/Tunnels - variable conditions
     vpn|wireguard|ip-tunnel|tun|pppoe)
         INITCWND=20
         INITRWND=30
         ;;
-    # Loopback - skip optimization
     loopback)
         exit 0
         ;;
-    # Unknown/Other - RFC 6928 conservative default
     *)
         INITCWND=10
         INITRWND=10
@@ -129,28 +131,20 @@ esac
 
 # Interface-specific TCP fin_timeout
 case "$INTERFACE_TYPE" in
-    # Wired connections - fast closure
     ethernet|bond|team|bridge|vlan|infiniband|ovs-bridge|ovs-interface|ovs-port)
         TCP_FIN_TIMEOUT=3
         ;;
-    # Wireless - slightly more tolerant
     wifi|gsm|cdma|bluetooth|wimax)
         TCP_FIN_TIMEOUT=5
         ;;
-    # VPN/Tunnels - more time for closure
     vpn|wireguard|ip-tunnel|tun|pppoe)
         TCP_FIN_TIMEOUT=10
         ;;
-    # Default - use pre-measured RTT for unknown interface types
     *)
         if [ -n "$MEASURED_RTT" ] && [ "$MEASURED_RTT" -gt 100 ]; then
-            # Formula: RTT/100 + 5s (e.g., 200ms RTT → 7s timeout)
             TCP_FIN_TIMEOUT=$((MEASURED_RTT / 100 + 5))
-            
-            # Cap at 30 seconds
             [ "$TCP_FIN_TIMEOUT" -gt 30 ] && TCP_FIN_TIMEOUT=30
         else
-            # Low RTT or measurement failed - use conservative default
             TCP_FIN_TIMEOUT=5
         fi
         ;;
@@ -158,10 +152,6 @@ esac
 
 # =============================================================================================
 # Intelligent Congestion Control Selection
-# ---------------------------------------------------------------------------------------------
-# Automatically select optimal TCP CC algorithm based on interface characteristics
-# BBR: Best for most scenarios (BBRv3 on XanMod, v1 on vanilla kernels)
-# Cubic: Loss-based, robust for high packet loss (mobile, VPN)
 # =============================================================================================
 
 select_congestion_control() {
@@ -169,60 +159,46 @@ select_congestion_control() {
     local rtt=$2
     local available_cc="/proc/sys/net/ipv4/tcp_available_congestion_control"
     
-    # Check what's available on this system
     local has_bbr
     local has_cubic
     
-    has_bbr=$(grep -o "bbr" "$available_cc" 2>/dev/null | head -1)
-    has_cubic=$(grep -o "cubic" "$available_cc" 2>/dev/null | head -1)
+    # Explicit || true to handle grep failure
+    has_bbr=$(grep -o "bbr" "$available_cc" 2>/dev/null | head -1 || true)
+    has_cubic=$(grep -o "cubic" "$available_cc" 2>/dev/null | head -1 || true)
     
     case "$interface_type" in
-        # High-speed wired: Maximize throughput with BBR
         ethernet|bond|team|bridge|vlan|infiniband|ovs-bridge|ovs-interface|ovs-port)
             [ -n "$has_bbr" ] && echo "bbr" && return
             [ -n "$has_cubic" ] && echo "cubic" && return
             echo "reno"
             ;;
-        
-        # WiFi/Bluetooth: BBR optimal (BBRv3 on XanMod, v1 on vanilla)
         wifi|bluetooth)
             [ -n "$has_bbr" ] && echo "bbr" && return
             [ -n "$has_cubic" ] && echo "cubic" && return
             echo "reno"
             ;;
-        
-        # Mobile data: Cubic handles packet loss better
         gsm|cdma|wimax)
             [ -n "$has_cubic" ] && echo "cubic" && return
             [ -n "$has_bbr" ] && echo "bbr" && return
             echo "reno"
             ;;
-        
-        # VPN/Tunnels: Conservative Cubic for encapsulation
         vpn|wireguard|ip-tunnel|tun|pppoe)
             [ -n "$has_cubic" ] && echo "cubic" && return
             [ -n "$has_bbr" ] && echo "bbr" && return
             echo "reno"
             ;;
-        
-        # Unknown: RTT-based decision
         *)
             if [ -n "$rtt" ]; then
                 if [ "$rtt" -lt 50 ]; then
-                    # Low latency (<50ms): BBR excels
                     [ -n "$has_bbr" ] && echo "bbr" && return
                 elif [ "$rtt" -lt 200 ]; then
-                    # Medium latency (50-200ms): BBR still good
                     [ -n "$has_bbr" ] && echo "bbr" && return
                     [ -n "$has_cubic" ] && echo "cubic" && return
                 else
-                    # High latency (>200ms): Cubic safer
                     [ -n "$has_cubic" ] && echo "cubic" && return
                     [ -n "$has_bbr" ] && echo "bbr" && return
                 fi
             fi
-            
-            # Default fallback
             [ -n "$has_bbr" ] && echo "bbr" && return
             [ -n "$has_cubic" ] && echo "cubic" && return
             echo "reno"
@@ -230,226 +206,247 @@ select_congestion_control() {
     esac
 }
 
-# Select optimal congestion control algorithm
 OPTIMAL_CC=$(select_congestion_control "$INTERFACE_TYPE" "$MEASURED_RTT")
 
-# Activate CAKE QDisc
-tc qdisc replace dev "$INTERFACE" root cake 2>/dev/null
+# =============================================================================================
+# CAKE QDisc with Diffserv
+# =============================================================================================
+
+tc qdisc replace dev "$INTERFACE" root cake diffserv4 2>/dev/null || true
+
+# =============================================================================================
+# TOS/DSCP Marking via nftables
+# =============================================================================================
+
+setup_tos_marking() {
+    local interface=$1
+    local table_name="netopt_${interface//-/_}"
+    
+    # Check if nftables is available
+    if ! command -v nft >/dev/null 2>&1; then
+        logger -t netopt "nftables not available, skipping TOS marking for $interface"
+        return 0
+    fi
+    
+    # Remove old table if exists
+    nft delete table inet "$table_name" 2>/dev/null || true
+    
+    # Create new table
+    if ! nft add table inet "$table_name" 2>/dev/null; then
+        logger -t netopt "Failed to create nftables table for $interface"
+        return 0
+    fi
+    
+    # Create postrouting chain with mangle priority
+    if ! nft add chain inet "$table_name" postrouting \
+        "{ type filter hook postrouting priority mangle; policy accept; }" 2>/dev/null; then
+        logger -t netopt "Failed to create nftables chain for $interface"
+        nft delete table inet "$table_name" 2>/dev/null || true
+        return 0
+    fi
+    
+    # Define Port Sets
+    nft add set inet "$table_name" voice_ports \
+        "{ type inet_service; flags interval; }" 2>/dev/null || true
+    nft add element inet "$table_name" voice_ports \
+        "{ 5060, 5004, 3074, 3478-3479, 10000-20000, 27015-27030 }" 2>/dev/null || true
+    
+    nft add set inet "$table_name" interactive_ports \
+        "{ type inet_service; }" 2>/dev/null || true
+    nft add element inet "$table_name" interactive_ports \
+        "{ 22, 23, 3389 }" 2>/dev/null || true
+    
+    nft add set inet "$table_name" video_ports \
+        "{ type inet_service; }" 2>/dev/null || true
+    nft add element inet "$table_name" video_ports \
+        "{ 554, 3478 }" 2>/dev/null || true
+    
+    nft add set inet "$table_name" web_ports \
+        "{ type inet_service; }" 2>/dev/null || true
+    nft add element inet "$table_name" web_ports \
+        "{ 80, 443 }" 2>/dev/null || true
+    
+    nft add set inet "$table_name" bulk_ports \
+        "{ type inet_service; flags interval; }" 2>/dev/null || true
+    nft add element inet "$table_name" bulk_ports \
+        "{ 6881-6889 }" 2>/dev/null || true
+    
+    # Add marking rules
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" meta l4proto udp udp dport "@voice_ports" ip dscp set ef 2>/dev/null || true
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" meta l4proto udp udp sport "@voice_ports" ip dscp set ef 2>/dev/null || true
+    
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" meta l4proto \{ tcp, udp \} th dport 53 ip dscp set cs6 2>/dev/null || true
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" meta l4proto \{ tcp, udp \} th sport 53 ip dscp set cs6 2>/dev/null || true
+    
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" udp dport 123 ip dscp set cs6 2>/dev/null || true
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" udp sport 123 ip dscp set cs6 2>/dev/null || true
+    
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" tcp dport "@interactive_ports" ip dscp set af41 2>/dev/null || true
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" tcp sport "@interactive_ports" ip dscp set af41 2>/dev/null || true
+    
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" meta l4proto \{ tcp, udp \} th dport "@video_ports" ip dscp set af31 2>/dev/null || true
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" meta l4proto \{ tcp, udp \} th sport "@video_ports" ip dscp set af31 2>/dev/null || true
+    
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" tcp dport "@web_ports" ip dscp set af11 2>/dev/null || true
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" tcp sport "@web_ports" ip dscp set af11 2>/dev/null || true
+    
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" tcp dport \{ 20, 21 \} ip dscp set af11 2>/dev/null || true
+    
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" meta l4proto \{ tcp, udp \} th dport "@bulk_ports" ip dscp set cs1 2>/dev/null || true
+    nft add rule inet "$table_name" postrouting \
+        oifname "$interface" meta l4proto \{ tcp, udp \} th sport "@bulk_ports" ip dscp set cs1 2>/dev/null || true
+    
+    logger -t netopt "TOS marking configured via nftables for $interface (diffserv4)"
+    return 0
+}
 
 # TCP optimizations (only set once, not on every event)
 if [ "$ACTION" = "up" ]; then
-    sysctl -q -w net.ipv4.tcp_slow_start_after_idle=0
-    sysctl -q -w net.ipv4.tcp_congestion_control="$OPTIMAL_CC"
-    sysctl -q -w net.ipv4.tcp_notsent_lowat=131072
-    sysctl -q -w net.ipv4.tcp_fin_timeout=$TCP_FIN_TIMEOUT
-    sysctl -q -w net.ipv4.tcp_tw_reuse=1
-    sysctl -q -w net.core.default_qdisc=cake
+    sysctl -q -w net.ipv4.tcp_slow_start_after_idle=0 || true
+    sysctl -q -w net.ipv4.tcp_congestion_control="$OPTIMAL_CC" || true
+    sysctl -q -w net.ipv4.tcp_notsent_lowat=131072 || true
+    sysctl -q -w net.ipv4.tcp_fin_timeout="$TCP_FIN_TIMEOUT" || true
+    sysctl -q -w net.ipv4.tcp_tw_reuse=1 || true
+    sysctl -q -w net.core.default_qdisc=cake || true
 
-    # =============================================================================================
-    # ECN (Explicit Congestion Notification) - Kernel-Aware Configuration
-    # ---------------------------------------------------------------------------------------------
-    # Reduces retransmits by 60-80% and latency spikes by 30-50%
-    # Synergizes perfectly with BBRv3 on XanMod
-    # 
-    # XanMod sets ECN=2 at boot (forced ECN) - optimal for modern networks
-    # Vanilla kernels default to ECN=0 (disabled) - we enable ECN=1
-    # 
-    # Modes:
-    #   0 = Disabled (legacy compatibility)
-    #   1 = Request ECN, fallback gracefully (safe for 95%+ networks)
-    #   2 = Force ECN (requires ECN-capable infrastructure)
-    # 
-    # Strategy:
-    #   - Wired/WiFi: Preserve kernel/boot default (XanMod=2 optimal, Vanilla→1)
-    #   - Mobile:     Override to Mode 1 (carrier networks vary)
-    #   - VPN:        Override to Mode 1 (tunneling + ECN can be problematic)
-    # =============================================================================================
-    
-    # Detect current ECN mode (set by kernel/sysctl at boot)
-    KERNEL_DEFAULT_ECN=$(sysctl -n net.ipv4.tcp_ecn)
+    # ECN Configuration
+    KERNEL_DEFAULT_ECN=$(sysctl -n net.ipv4.tcp_ecn || echo "0")
     
     case "$INTERFACE_TYPE" in
-        # High-speed wired: Preserve optimized defaults
         ethernet|bond|team|bridge|vlan|infiniband|ovs-bridge|ovs-interface|ovs-port)
-            # XanMod: Keep Mode 2 (BBRv3 + ECN=2 = maximum performance)
-            # Vanilla: Upgrade from 0 to 1 (activate ECN support)
             if [ "$KERNEL_DEFAULT_ECN" -eq 0 ]; then
-                sysctl -q -w net.ipv4.tcp_ecn=1
+                sysctl -q -w net.ipv4.tcp_ecn=1 || true
             fi
             ;;
-        
-        # WiFi/Bluetooth: Same strategy as wired
         wifi|bluetooth)
             if [ "$KERNEL_DEFAULT_ECN" -eq 0 ]; then
-                sysctl -q -w net.ipv4.tcp_ecn=1
+                sysctl -q -w net.ipv4.tcp_ecn=1 || true
             fi
             ;;
-        
-        # Mobile data: Always Mode 1 (carrier networks inconsistent with ECN)
-        gsm|cdma|wimax)
-            sysctl -q -w net.ipv4.tcp_ecn=1
-            ;;
-        
-        # VPN/Tunnels: Always Mode 1 (conservative - ECN + tunneling edge cases)
-        vpn|wireguard|ip-tunnel|tun|pppoe)
-            sysctl -q -w net.ipv4.tcp_ecn=1
-            ;;
-        
-        # Unknown: Conservative Mode 1
-        *)
-            sysctl -q -w net.ipv4.tcp_ecn=1
+        gsm|cdma|wimax|vpn|wireguard|ip-tunnel|tun|pppoe|*)
+            sysctl -q -w net.ipv4.tcp_ecn=1 || true
             ;;
     esac
 
-    # =============================================================================================
-    # Adaptive Buffer Sizing based on Interface Type and Available RAM
-    # ---------------------------------------------------------------------------------------------
-    # Buffer sizes are adjusted based on interface characteristics:
-    # - High-speed wired: Larger buffers for bulk transfers
-    # - Wireless/Mobile: Moderate buffers to handle variable bandwidth
-    # - VPN/Tunnels: Smaller buffers due to encapsulation overhead
-    # - Unknown: Conservative sizing with RTT consideration
-    # =============================================================================================
+    # Adaptive Buffer Sizing
+    TOTAL_RAM_BYTES=$(free -b | awk '/^Mem:/{print $2}' || echo "8589934592")
 
-    # Get total system RAM
-    TOTAL_RAM_BYTES=$(free -b | awk '/^Mem:/{print $2}')
-
-    # Set buffer factor based on interface type
     case "$INTERFACE_TYPE" in
-        # High-speed wired connections - maximize throughput
         ethernet|bond|team|bridge|vlan|infiniband|ovs-bridge|ovs-interface|ovs-port)
-            BUFFER_FACTOR="0.0025"  # 0.25% of RAM
-            MIN_BUFFER=8388608      # 8MB minimum
-            MAX_BUFFER=134217728    # 128MB maximum
+            BUFFER_FACTOR="0.0025"
+            MIN_BUFFER=8388608
+            MAX_BUFFER=134217728
             ;;
-        
-        # Wireless/Mobile - balance between throughput and memory
         wifi|bluetooth)
-            BUFFER_FACTOR="0.002"   # 0.2% of RAM
-            MIN_BUFFER=4194304      # 4MB minimum
-            MAX_BUFFER=67108864     # 64MB maximum
+            BUFFER_FACTOR="0.002"
+            MIN_BUFFER=4194304
+            MAX_BUFFER=67108864
             ;;
-        
-        # Mobile data - conservative due to variable bandwidth
         gsm|cdma|wimax)
-            BUFFER_FACTOR="0.0015"  # 0.15% of RAM
-            MIN_BUFFER=2097152      # 2MB minimum
-            MAX_BUFFER=33554432     # 32MB maximum
+            BUFFER_FACTOR="0.0015"
+            MIN_BUFFER=2097152
+            MAX_BUFFER=33554432
             ;;
-        
-        # VPN/Tunnels - smaller buffers due to encapsulation overhead
         vpn|wireguard|ip-tunnel|tun|pppoe)
-            BUFFER_FACTOR="0.0015"  # 0.15% of RAM
-            MIN_BUFFER=4194304      # 4MB minimum
-            MAX_BUFFER=33554432     # 32MB maximum
+            BUFFER_FACTOR="0.0015"
+            MIN_BUFFER=4194304
+            MAX_BUFFER=33554432
             ;;
-        
-        # Unknown interface types - adaptive based on pre-measured RTT
         *)
-            # Default conservative values
             BUFFER_FACTOR="0.002"
             MIN_BUFFER=4194304
             MAX_BUFFER=67108864
             
-            # Adjust based on pre-measured RTT (no re-measurement needed)
             if [ -n "$MEASURED_RTT" ]; then
                 if [ "$MEASURED_RTT" -lt 10 ]; then
-                    # Very low latency - likely local/fast connection
                     BUFFER_FACTOR="0.0025"
-                    MAX_BUFFER=134217728  # 128MB
+                    MAX_BUFFER=134217728
                 elif [ "$MEASURED_RTT" -lt 50 ]; then
-                    # Low latency - good connection
                     BUFFER_FACTOR="0.002"
-                    MAX_BUFFER=67108864   # 64MB
+                    MAX_BUFFER=67108864
                 elif [ "$MEASURED_RTT" -lt 200 ]; then
-                    # Medium latency - wireless/distant
                     BUFFER_FACTOR="0.0015"
-                    MAX_BUFFER=33554432   # 32MB
+                    MAX_BUFFER=33554432
                 else
-                    # High latency - satellite/congested
                     BUFFER_FACTOR="0.001"
-                    MIN_BUFFER=2097152    # 2MB
-                    MAX_BUFFER=16777216   # 16MB
+                    MIN_BUFFER=2097152
+                    MAX_BUFFER=16777216
                 fi
             fi
             ;;
     esac
 
-    # Calculate buffer size based on RAM and factor
-    RMEM_MAX=$(echo "$TOTAL_RAM_BYTES * $BUFFER_FACTOR" | bc -l | cut -d. -f1)
-
-    # Apply min/max limits
+    RMEM_MAX=$(echo "$TOTAL_RAM_BYTES * $BUFFER_FACTOR" | bc -l | cut -d. -f1 || echo "$MAX_BUFFER")
     [ "$RMEM_MAX" -lt "$MIN_BUFFER" ] && RMEM_MAX="$MIN_BUFFER"
     [ "$RMEM_MAX" -gt "$MAX_BUFFER" ] && RMEM_MAX="$MAX_BUFFER"
 
-    # Apply calculated values
-    sysctl -q -w net.core.rmem_max="$RMEM_MAX"
-    sysctl -q -w net.core.wmem_max="$RMEM_MAX"
-    sysctl -q -w net.ipv4.tcp_rmem="4096 87380 $RMEM_MAX"
-    sysctl -q -w net.ipv4.tcp_wmem="4096 65536 $RMEM_MAX"
+    sysctl -q -w net.core.rmem_max="$RMEM_MAX" || true
+    sysctl -q -w net.core.wmem_max="$RMEM_MAX" || true
+    sysctl -q -w net.ipv4.tcp_rmem="4096 87380 $RMEM_MAX" || true
+    sysctl -q -w net.ipv4.tcp_wmem="4096 65536 $RMEM_MAX" || true
 
-    # =============================================================================================
     # Advanced Latency Optimizations
-    # ---------------------------------------------------------------------------------------------
-    # These parameters are particularly effective in kernels with Cloudflare patches 
-    # (e.g., XanMod). They help minimize latency spikes caused by TCP buffer reorganization.
-    # =============================================================================================
-
-    # Overhead protection
-    sysctl -q -w net.ipv4.tcp_adv_win_scale=-2
-    # Collapse limit
-    sysctl -q -w net.ipv4.tcp_collapse_max_bytes=6291456
+    sysctl -q -w net.ipv4.tcp_adv_win_scale=-2 || true
+    sysctl -q -w net.ipv4.tcp_collapse_max_bytes=6291456 || true
+    
+    # Setup TOS marking
+    setup_tos_marking "$INTERFACE"
 fi
 
 # Optimize IPv4 route
 if [ -n "$GATEWAY" ] && [ "$GATEWAY" != "--" ] && [ -n "$IP" ]; then
-    # NetworkManager settings (only on first "up" event)
     if [ "$ACTION" = "up" ]; then
-        nmcli con mod "$CONNECTION" ipv4.route-metric 600
-        nmcli con mod "$CONNECTION" ipv4.may-fail no 2>/dev/null
+        nmcli con mod "$CONNECTION" ipv4.route-metric 600 2>/dev/null || true
+        nmcli con mod "$CONNECTION" ipv4.may-fail no 2>/dev/null || true
     fi
     
-    # Only add static route if it doesn't exist yet
-    if ! ip route show | grep -q "default via $GATEWAY dev $INTERFACE proto static.*initcwnd $INITCWND"; then
-        ip route add default via "$GATEWAY" dev "$INTERFACE" proto static src "$IP" metric 500 initcwnd $INITCWND initrwnd $INITRWND
+    if ! ip route show 2>/dev/null | grep -q "default via $GATEWAY dev $INTERFACE proto static.*initcwnd $INITCWND"; then
+        ip route add default via "$GATEWAY" dev "$INTERFACE" proto static src "$IP" \
+            metric 500 initcwnd "$INITCWND" initrwnd "$INITRWND" 2>/dev/null || true
     fi
 fi
 
 # Optimize IPv6 route
 if [ -n "$GATEWAY6" ] && [ "$GATEWAY6" != "--" ]; then
-    # Validate IPv6 gateway format
-    if [[ "$GATEWAY6" =~ ^[0-9a-f:]+$ ]]; then
-        # Valid IPv6 format - check if it's a routable address
+    # Use regex variable for clarity
+    ipv6_regex='^[0-9a-f:]+$'
+    if [[ "$GATEWAY6" =~ $ipv6_regex ]]; then
         case "$GATEWAY6" in
-            fe80:*)
-                # Link-local address - valid for IPv6 gateway
-                VALID_IPV6=1
-                ;;
-            2000:*|2001:*|2002:*|2003:*|2004:*|2005:*|2006:*|2007:*|2008:*|2009:*|200a:*|200b:*|200c:*|200d:*|200e:*|200f:*|3*)
-                # Global unicast address (2000::/3 range)
+            fe80:*|2000:*|2001:*|2002:*|2003:*|2004:*|2005:*|2006:*|2007:*|2008:*|2009:*|200a:*|200b:*|200c:*|200d:*|200e:*|200f:*|3*)
                 VALID_IPV6=1
                 ;;
             *)
-                # Invalid or reserved range
                 VALID_IPV6=0
                 ;;
         esac
         
-        # Only proceed if IPv6 gateway is valid
         if [ "$VALID_IPV6" = "1" ]; then
             if [ "$ACTION" = "up" ]; then
-                nmcli con mod "$CONNECTION" ipv6.route-metric 600
-                nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null
+                nmcli con mod "$CONNECTION" ipv6.route-metric 600 2>/dev/null || true
+                nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null || true
             fi
             
-            # Only add static IPv6 route if not present
-            if ! ip -6 route show | grep -q "default via $GATEWAY6 dev $INTERFACE proto static.*initcwnd $INITCWND"; then
-                # Use global IPv6 address if available
+            if ! ip -6 route show 2>/dev/null | grep -q "default via $GATEWAY6 dev $INTERFACE proto static.*initcwnd $INITCWND"; then
                 if [ -n "$IP6" ]; then
-                    ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" proto static src "$IP6" metric 500 initcwnd $INITCWND initrwnd $INITRWND pref high
+                    ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" proto static src "$IP6" \
+                        metric 500 initcwnd "$INITCWND" initrwnd "$INITRWND" pref high 2>/dev/null || true
                 else
-                    # For link-local gateways, add route without src
-                    ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" proto static metric 500 initcwnd $INITCWND initrwnd $INITRWND pref high
+                    ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" proto static \
+                        metric 500 initcwnd "$INITCWND" initrwnd "$INITRWND" pref high 2>/dev/null || true
                 fi
             fi
         fi

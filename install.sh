@@ -47,8 +47,7 @@ echo -e "${GREEN}All dependencies OK${NC}"
 
 # Install script
 echo -e "\n${YELLOW}Installing netopt...${NC}"
-cp netopt /etc/NetworkManager/dispatcher.d/99-netopt
-chmod +x /etc/NetworkManager/dispatcher.d/99-netopt
+install -v -m 755 -p netopt /etc/NetworkManager/dispatcher.d/99-netopt
 
 echo -e "${GREEN}✓ Installed to /etc/NetworkManager/dispatcher.d/99-netopt${NC}"
 
