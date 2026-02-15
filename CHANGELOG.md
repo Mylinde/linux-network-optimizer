@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0] (2026-02-15): Pure nftables QoS + ShellCheck clean
+
+Added: nftables DSCP marking (5 port sets, 15 rules)
+Added: CAKE diffserv4 integration
+Added: Strict mode (set -Eeu) + Concurrency protection (flock)
+Improved: ShellCheck compliance (0 warnings, 0 errors)
+Tested: 5M+ packets, zero issues
+
 ## [1.1.0] - 2026-02-12
 
 ### Added
@@ -68,12 +76,6 @@
 - Performance improvements: 30-50% faster connection establishment for small transfers
 
 ### Compatibility
-- Ubuntu 20.04, 22.04, 24.04
-- Debian 11+, 12
-- Fedora 33+
-- Arch Linux
-- Pop!_OS
-- Linux Mint
 - Requires Linux kernel 4.19+ for CAKE qdisc support
 
 [1.0.0]: https://github.com/Mylinde/linux-network-optimizer/releases/tag/v1.0.0
