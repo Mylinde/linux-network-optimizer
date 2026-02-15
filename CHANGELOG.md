@@ -1,12 +1,12 @@
 # Changelog
 
-## [1.4.0] (2026-02-15): Pure nftables QoS + ShellCheck clean
+## [1.4.0] 2026-02-15
 
-Added: nftables DSCP marking (5 port sets, 15 rules)
-Added: CAKE diffserv4 integration
-Added: Strict mode (set -Eeu) + Concurrency protection (flock)
-Improved: ShellCheck compliance (0 warnings, 0 errors)
-Tested: 5M+ packets, zero issues
+- **Pure nftables QoS + ShellCheck clean**
+  - Added: nftables DSCP marking (5 port sets, 15 rules)
+  - Added: CAKE diffserv4 integration
+  - Improved: ShellCheck compliance (0 warnings, 0 errors)
+  - Tested: 5M+ packets, zero issues
 
 ## [1.1.0] - 2026-02-12
 
