@@ -527,7 +527,7 @@ sudo bash Test/netopt-test wlan0 (or similar)
 - Some ISPs implement their own QoS
 - Local optimizations become redundant
 - Check: Test with/without VPN to detect ISP shaping
-````
+
 ## Contributing
 
 Pull requests are welcome! For major changes, please open an issue first.
