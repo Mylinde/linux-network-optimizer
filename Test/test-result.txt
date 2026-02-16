@@ -1,0 +1,104 @@
+mario@mario-Vivobook ~/G/l/Test > doas ./netopt-test
+doas (mario@mario-Vivobook) password: 
+╔═══════════════════════════════════════════════════════════╗
+║  Network Optimizer - Performance Benchmark                ║
+╚═══════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════
+ PHASE 1: WITHOUT NETWORK OPTIMIZER
+═══════════════════════════════════════════════════════════
+
+Current qdisc: qdisc noqueue 0: root refcnt 2 
+
+→ Measuring ping latency (20 packets)...
+  Average RTT: 63.347ms
+
+→ Measuring latency under load...
+  Measuring latency during active download...
+  Latency under load: 35.214ms
+
+→ Measuring page load times...
+  Testing: https://www.amazon.com
+    TTFB: 273.145000ms, Total: 274.060000ms
+  Testing: https://www.ebay.com
+    TTFB: 533.340000ms, Total: 1234.395000ms
+  Testing: https://www.wikipedia.org
+    TTFB: 341.624000ms, Total: 584.461000ms
+  Average TTFB: 382.70ms (3/3 successful)
+  Average Load Time: 697.63ms (3/3 successful)
+
+✓ Phase 1 completed
+
+Please install and apply netopt now:
+  sudo ./install.sh
+  sudo nmcli connection down <connection-name>
+  sudo nmcli connection up <connection-name>
+
+Press Enter when netopt is active and network is reconnected...
+
+═══════════════════════════════════════════════════════════
+ PHASE 2: WITH NETWORK OPTIMIZER
+═══════════════════════════════════════════════════════════
+
+Verifying applied optimizations:
+  ✓ CAKE qdisc: Active
+  ✓ Routes: 2 (static + DHCP fallback)
+  ✓ Congestion Control: bbr
+  ✓ tcp_slow_start_after_idle: 0 (optimized)
+  ✓ nftables QoS: Active
+
+Press Enter to start Phase 2 tests...
+
+→ Measuring ping latency (20 packets)...
+  Average RTT: 36.638ms
+
+→ Measuring latency under load...
+  Measuring latency during active download...
+  Latency under load: 31.251ms
+
+→ Measuring page load times...
+  Testing: https://www.amazon.com
+    TTFB: 252.602000ms, Total: 253.733000ms
+  Testing: https://www.ebay.com
+    TTFB: 513.901000ms, Total: 1019.546000ms
+  Testing: https://www.wikipedia.org
+    TTFB: 201.280000ms, Total: 298.359000ms
+  Average TTFB: 322.59ms (3/3 successful)
+  Average Load Time: 523.87ms (3/3 successful)
+
+✓ Phase 2 completed
+
+
+╔═══════════════════════════════════════════════════════════╗
+║  Performance Comparison Results                           ║
+╚═══════════════════════════════════════════════════════════╝
+
+Ping Latency (Idle):
+  Before: 63.347ms
+  After:  36.638ms
+  Improvement: 42.00% (better)
+
+Latency Under Load:
+  Before: 35.214ms
+  After:  31.251ms
+  Improvement: 11.00% (better)
+
+Page Load - Time To First Byte:
+  Before: 382.70ms
+  After:  322.59ms
+  Improvement: 15.00% (faster)
+
+Page Load - Total Time:
+  Before: 697.63ms
+  After:  523.87ms
+  Improvement: 24.00% (faster)
+
+╔═══════════════════════════════════════════════════════════╗
+║  Overall Assessment                                       ║
+╚═══════════════════════════════════════════════════════════╝
+✓ Network optimizer shows significant improvements (4/4 metrics)
+
+╔═══════════════════════════════════════════════════════════╗
+║  Benchmark completed!                                     ║
+╚═══════════════════════════════════════════════════════════╝
+mario@mario-Vivobook ~/G/l/Test > 
