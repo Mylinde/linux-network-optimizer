@@ -1,5 +1,4 @@
 #!/bin/bash
-# filepath: /home/mario/Github/linux-network-optimizer/Test/netopt-test
 # netopt-benchmark.sh - Compare performance before and after netopt
 
 set -euo pipefail

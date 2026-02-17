@@ -4,17 +4,17 @@ Automatic network performance optimization for Linux systems using NetworkManage
 
 ## Features
 
-- ✅ **TCP Fast Open**: Optimized `initcwnd` and `initrwnd` for faster connection establishment (interface-adaptive)
-- ✅ **Intelligent Congestion Control**: Automatic selection between BBR (low loss) and CUBIC (high loss scenarios)
-- ✅ **BBR Congestion Control**: Google's BBR algorithm for improved throughput and latency
-- ✅ **CAKE QDisc with Diffserv**: Advanced queue management with QoS class support (diffserv4)
-- ✅ **nftables QoS Marking**: Automatic DSCP marking for traffic prioritization
-- ✅ **Smart Routing**: Static routes with DHCP fallback (metric-based priority)
-- ✅ **Dual-Stack Support**: Full IPv4 & IPv6 optimization with automatic gateway validation
-- ✅ **RAM-Adaptive Buffers**: TCP buffers automatically scale with available memory and RTT
-- ✅ **RTT-Aware Optimization**: All parameters adapt based on measured network latency
-- ✅ **Auto-Recovery**: Survives DHCP renewals and network changes
-- ✅ **Interface-Adaptive Settings**: TCP parameters automatically adjust based on connection type and RTT
+-  **TCP Fast Open**: Optimized `initcwnd` and `initrwnd` for faster connection establishment (interface-adaptive)
+-  **Intelligent Congestion Control**: Automatic selection between BBR (low loss) and CUBIC (high loss scenarios)
+-  **BBR Congestion Control**: Google's BBR algorithm for improved throughput and latency
+-  **CAKE QDisc with Diffserv**: Advanced queue management with QoS class support (diffserv4)
+-  **nftables QoS Marking**: Automatic DSCP marking for traffic prioritization
+-  **Smart Routing**: Static routes with DHCP fallback (metric-based priority)
+-  **Dual-Stack Support**: Full IPv4 & IPv6 optimization with automatic gateway validation
+-  **RAM-Adaptive Buffers**: TCP buffers automatically scale with available memory and RTT
+-  **RTT-Aware Optimization**: All parameters adapt based on measured network latency
+-  **Auto-Recovery**: Survives DHCP renewals and network changes
+-  **Interface-Adaptive Settings**: TCP parameters automatically adjust based on connection type and RTT
 
 ## Performance Improvements
 
@@ -132,9 +132,9 @@ The script implements a **dual-route system** with automatic failover protection
 2. **DHCP6 Route (Metric 600)**: DHCPv6 fallback with metric-based priority
 
 **IPv6 Gateway Validation**:
-- ✅ Link-local addresses: `fe80:*`
-- ✅ Global unicast: `2000:*` through `3fff:*` (RFC-compliant)
-- ❌ Invalid or reserved ranges are automatically rejected
+-  Link-local addresses: `fe80:*`
+-  Global unicast: `2000:*` through `3fff:*` (RFC-compliant)
+-  Invalid or reserved ranges are automatically rejected
 
 ```bash
 # View both IPv4 and IPv6 routes in priority order
@@ -163,9 +163,9 @@ ip route show default && echo "---" && ip -6 route show default
 The script intelligently configures **ECN** for better congestion handling:
 
 - **ECN=1 (Enabled)**: On most interfaces (wired, wireless, VPN)
-  - ✅ Reduces packet loss: Routers can signal congestion without dropping packets
-  - ✅ Lower latency: Avoids timeout-based retransmission
-  - ✅ Better for CAKE: Works synergistically with diffserv marking
+  -  Reduces packet loss: Routers can signal congestion without dropping packets
+  -  Lower latency: Avoids timeout-based retransmission
+  -  Better for CAKE: Works synergistically with diffserv marking
 
 - **ECN Detection**: Preserves existing ECN settings if already optimized
   - Checks if kernel already has ECN=2 (from XanMod/custom kernels)
@@ -190,10 +190,10 @@ tc qdisc replace dev <interface> root cake diffserv4
 ```
 
 **Benefits**:
-- ✅ Reduces bufferbloat significantly (80-90%)
-- ✅ Separates traffic into 4 priority classes
-- ✅ Works with DSCP markings from nftables
-- ✅ Low CPU overhead (~2-5%)
+-  Reduces bufferbloat significantly (80-90%)
+-  Separates traffic into 4 priority classes
+-  Works with DSCP markings from nftables
+-  Low CPU overhead (~2-5%)
 
 **Diffserv4 Classes**:
 1. **EF (Expedited Forwarding)**: Voice, VoIP → Lowest latency
@@ -266,16 +266,16 @@ tc -s qdisc show dev wlan0 | grep -A 20 cake
 ```
 
 #### Why nftables Instead of iptables?
-- ✅ **Faster**: Single table traversal vs multiple chains
-- ✅ **Cleaner**: Declarative rules vs imperative commands
-- ✅ **Future-proof**: Officially recommended by Linux kernel
-- ✅ **Better Performance**: Lower CPU overhead
-- ✅ **Dynamic Sets**: Port ranges handled efficiently
+- **Faster**: Single table traversal vs multiple chains
+- **Cleaner**: Declarative rules vs imperative commands
+- **Future-proof**: Officially recommended by Linux kernel
+- **Better Performance**: Lower CPU overhead
+- **Dynamic Sets**: Port ranges handled efficiently
 
 #### Fallback Behavior
 If **nftables is not available**:
-- ✅ Script still works perfectly
-- ✅ CAKE qdisc still provides bufferbloat reduction
+- Script still works perfectly
+- CAKE qdisc still provides bufferbloat reduction
 - ⚠️ No automatic DSCP marking (all traffic treated equally)
 - ℹ️ Manual marking still possible via `iptables -j CLASSIFY` if preferred
 
@@ -303,16 +303,16 @@ The script automatically selects the optimal TCP congestion control algorithm ba
 **Detailed Strategy**:
 
 - **BBR (Bottleneck Bandwidth and RTT)**: Default for low-loss networks
-  - ✅ Optimal for: Wired connections, modern WiFi, low packet loss
-  - ✅ Reduces latency: 20-40% lower queueing delays
-  - ✅ Better for: Gaming, VoIP, interactive applications
+  - Optimal for: Wired connections, modern WiFi, low packet loss
+  - Reduces latency: 20-40% lower queueing delays
+  - Better for: Gaming, VoIP, interactive applications
   - ❌ Struggles with: High packet loss (>2%), older WiFi protocols
   - ℹ️ **BBRv3 on XanMod kernels**: Improved fairness and slow-start behavior
 
 - **CUBIC (Loss-based)**: Automatic fallback for high-loss networks
-  - ✅ Works best with: WiFi legacy (802.11n), mobile, satellite
-  - ✅ Better fairness: Coexists well with Reno/NewReno flows
-  - ✅ Graceful backoff: Handles loss gracefully with exponential reduction
+  - Works best with: WiFi legacy (802.11n), mobile, satellite
+  - Better fairness: Coexists well with Reno/NewReno flows
+  - Graceful backoff: Handles loss gracefully with exponential reduction
   - ⚠️ Higher latency: More queueing during congestion
   - ℹ️ Conservative approach: Safe choice for unreliable networks
 
@@ -332,7 +332,7 @@ nmcli -g GENERAL.TYPE device show wlan0
 iw wlan0 info | grep -i "type\|band"
 
 # Modern WiFi (802.11ac/ax):
-# band 2GHz, band 5GHz → BBR applied ✅
+# band 2GHz, band 5GHz → BBR applied
 
 # Legacy WiFi (802.11n):
 # band 2GHz only → Consider CUBIC for better stability
