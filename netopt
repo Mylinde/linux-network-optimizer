@@ -405,28 +405,39 @@ if [ "$ACTION" = "up" ]; then
     
     # Setup TOS marking
     setup_tos_marking "$INTERFACE"
-fi
 
-# Optimize IPv4 route
-if [ -n "$GATEWAY" ] && [ "$GATEWAY" != "--" ] && [ -n "$IP" ]; then
-        nmcli con mod "$CONNECTION" ipv4.route-metric 600 2>/dev/null || true
-        nmcli con mod "$CONNECTION" ipv4.may-fail no 2>/dev/null || true
-    fi
-    
-    if ! ip route show 2>/dev/null | grep -q "default via $GATEWAY dev $INTERFACE.*initcwnd $INITCWND"; then
-    	ip route add default via "$GATEWAY" dev "$INTERFACE" \
-    	metric 500 quickack 1 initcwnd "$INITCWND" initrwnd "$INITRWND" 2>/dev/null || true
-    fi
-
-# Optimize IPv6 route
-if [ -n "$GATEWAY6" ] && [ "$GATEWAY6" != "--" ] && [ -n "$IP6" ]; then
-		nmcli con mod "$CONNECTION" ipv6.route-metric 600 2>/dev/null || true
-        nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null || true
-    fi
-       
-	if ! ip -6 route show 2>/dev/null | grep -q "default via $GATEWAY6 dev $INTERFACE.*initcwnd $INITCWND"; then
-			ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" \
-	        metric 400 quickack 1 initcwnd "$INITCWND" initrwnd "$INITRWND" pref high 2>/dev/null || true
+	# Optimize IPv4 route
+	if [ -n "$GATEWAY" ] && [ "$GATEWAY" != "--" ] && [ -n "$IP" ]; then
+	        nmcli con mod "$CONNECTION" ipv4.route-metric 600 2>/dev/null || true
+	        nmcli con mod "$CONNECTION" ipv4.may-fail no 2>/dev/null || true
+	    fi
+	    
+	    if ! ip route show 2>/dev/null | grep -q "default via $GATEWAY dev $INTERFACE.*initcwnd $INITCWND"; then
+	    	ip route add default via "$GATEWAY" dev "$INTERFACE" \
+	    	metric 500 quickack 1 initcwnd "$INITCWND" initrwnd "$INITRWND" 2>/dev/null || true
+	    fi
+	    
+	# Optimize IPv6 route (with a short wait for the gateway)
+	if [ -n "$INTERFACE" ]; then
+		local_wait=0
+		while [ -z "$GATEWAY6" ] && [ $local_wait -lt 5 ]; do
+			sleep 0.5
+			GATEWAY6=$(ip -6 route show default dev "$INTERFACE" 2>/dev/null | awk '{print $3}' | head -n 1 || true)
+			# Fallback, in case IP6 is still empty
+			[ -z "$IP6" ] && IP6=$(ip -6 addr show dev "$INTERFACE" scope global 2>/dev/null | grep -oP '(?<=inet6\s)[0-9a-f:]+' | head -n 1 || true)
+			local_wait=$((local_wait + 1))
+		done
 	fi
+
+	if [ -n "$GATEWAY6" ] && [ "$GATEWAY6" != "--" ] && [ -n "$IP6" ]; then
+		nmcli con mod "$CONNECTION" ipv6.route-metric 600 2>/dev/null || true
+		nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null || true
+		
+		if ! ip -6 route show 2>/dev/null | grep -q "default via $GATEWAY6 dev $INTERFACE.*initcwnd $INITCWND"; then
+			ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" \
+			metric 400 quickack 1 initcwnd "$INITCWND" initrwnd "$INITRWND" pref high 2>/dev/null || true
+		fi
+	fi
+fi
 
 exit 0
