@@ -409,7 +409,6 @@ if [ "$ACTION" = "up" ]; then
 	# Optimize IPv4 route
 	if [ -n "$GATEWAY" ] && [ "$GATEWAY" != "--" ] && [ -n "$IP" ]; then
 	        nmcli con mod "$CONNECTION" ipv4.route-metric 600 2>/dev/null || true
-	        nmcli con mod "$CONNECTION" ipv4.may-fail no 2>/dev/null || true
 	    fi
 	    
 	    if ! ip route show 2>/dev/null | grep -q "default via $GATEWAY dev $INTERFACE.*initcwnd $INITCWND"; then
@@ -431,7 +430,6 @@ if [ "$ACTION" = "up" ]; then
 
 	if [ -n "$GATEWAY6" ] && [ "$GATEWAY6" != "--" ] && [ -n "$IP6" ]; then
 		nmcli con mod "$CONNECTION" ipv6.route-metric 600 2>/dev/null || true
-		nmcli con mod "$CONNECTION" ipv6.may-fail no 2>/dev/null || true
 		
 		if ! ip -6 route show 2>/dev/null | grep -q "default via $GATEWAY6 dev $INTERFACE.*initcwnd $INITCWND"; then
 			ip -6 route add default via "$GATEWAY6" dev "$INTERFACE" \
