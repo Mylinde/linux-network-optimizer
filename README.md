@@ -15,6 +15,7 @@ Automatic network performance optimization for Linux systems using NetworkManage
 -  **RTT-Aware Optimization**: All parameters adapt based on measured network latency
 -  **RPS Auto-Tuning**: Enables Receive Packet Steering on RX queues using an all-CPU mask
 -  **RFS Auto-Tuning**: Enables Receive Flow Steering for better flow-to-CPU locality
+-  **XPS Auto-Tuning**: Enables Transmit Packet Steering on TX queues using an all-CPU mask
 -  **Auto-Recovery**: Survives DHCP renewals and network changes
 -  **Interface-Adaptive Settings**: TCP parameters automatically adjust based on connection type and RTT
 
@@ -107,6 +108,9 @@ sysctl net.core.default_qdisc              # Should be: cake
 # Check RPS mask (all CPU bits set, e.g. "ff" on 8 cores)
 cat /sys/class/net/wlan0/queues/rx-0/rps_cpus
 
+# Check XPS mask
+cat /sys/class/net/wlan0/queues/tx-0/xps_cpus
+
 # Check RFS settings
 sysctl net.core.rps_sock_flow_entries
 cat /sys/class/net/wlan0/queues/rx-0/rps_flow_cnt
@@ -190,6 +194,14 @@ The script enables **RFS** in addition to RPS to improve flow-to-CPU locality.
 - Splits flow entries across all detected RX queues and writes per-queue `rps_flow_cnt`
 
 RFS can reduce tail latency and improve responsiveness during mixed workloads (for example: browsing while streaming).
+
+### XPS (Transmit Packet Steering)
+The script enables **XPS** for each transmit queue of the active interface on `up` events.
+
+- Uses the same all-CPU hexadecimal mask as RPS (`f...f`)
+- Writes that mask to `/sys/class/net/<iface>/queues/tx-*/xps_cpus`
+
+XPS helps keep transmit-side packet processing distributed across cores and can reduce CPU hotspots during high parallel upload/download activity.
 
 ### ECN (Explicit Congestion Notification)
 The script intelligently configures **ECN** for better congestion handling:

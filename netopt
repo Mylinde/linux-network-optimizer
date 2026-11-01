@@ -405,6 +405,12 @@ if [ "$ACTION" = "up" ]; then
             [ -f "$rps_file" ] || continue
             printf "%s" "$RPS_MASK" > "$rps_file" 2>/dev/null || true
         done
+
+        # XPS (Transmit Packet Steering)
+        for xps_file in /sys/class/net/$INTERFACE/queues/tx-*/xps_cpus; do
+            [ -f "$xps_file" ] || continue
+            printf "%s" "$RPS_MASK" > "$xps_file" 2>/dev/null || true
+        done
     fi
 
     # RFS (Receive Flow Steering)
