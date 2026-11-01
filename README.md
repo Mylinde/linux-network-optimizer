@@ -13,15 +13,16 @@ Automatic network performance optimization for Linux systems using NetworkManage
 -  **Dual-Stack Support**: Full IPv4 & IPv6 optimization with automatic gateway validation
 -  **RAM-Adaptive Buffers**: TCP buffers automatically scale with available memory and RTT
 -  **RTT-Aware Optimization**: All parameters adapt based on measured network latency
+-  **RPS Auto-Tuning**: Enables Receive Packet Steering on RX queues using an all-CPU mask
 -  **Auto-Recovery**: Survives DHCP renewals and network changes
 -  **Interface-Adaptive Settings**: TCP parameters automatically adjust based on connection type and RTT
 
 ## Performance Improvements
 
-- ⚡ **30-50% faster** connection establishment for small transfers
-- ⚡ **Reduced latency** during high network load (bufferbloat mitigation)
-- ⚡ **Better bandwidth utilization** through optimized TCP parameters
-- ⚡ **Automatic failover** to CUBIC on high-loss networks for improved reliability
+- **30-50% faster** connection establishment for small transfers
+- **Reduced latency** during high network load (bufferbloat mitigation)
+- **Better bandwidth utilization** through optimized TCP parameters
+- **Automatic failover** to CUBIC on high-loss networks for improved reliability
 
 ## Requirements
 
@@ -47,10 +48,10 @@ which tc && echo "tc available" || echo "iproute2 missing"
 systemctl is-active NetworkManager || echo "NetworkManager not running"
 
 # Check CAKE support
-tc qdisc add dev lo root cake 2>/dev/null && echo "✅ CAKE supported" && tc qdisc del dev lo root || echo "❌ CAKE not supported"
+tc qdisc add dev lo root cake 2>/dev/null && echo "CAKE supported" && tc qdisc del dev lo root || echo "CAKE not supported"
 
 # Check nftables (optional but recommended)
-which nft && echo "✅ nftables available" || echo "⚠️ nftables not installed (QoS marking disabled)"
+which nft && echo "nftables available" || echo "nftables not installed (QoS marking disabled)"
 # Install if missing:
 # sudo apt install nftables  # Debian/Ubuntu
 # sudo dnf install nftables  # Fedora
@@ -101,6 +102,9 @@ sysctl net.ipv4.tcp_notsent_lowat          # Should be: 131072
 sysctl net.ipv4.tcp_adv_win_scale          # Should be: -2
 sysctl net.ipv4.tcp_collapse_max_bytes     # Should be: 6291456
 sysctl net.core.default_qdisc              # Should be: cake
+
+# Check RPS mask (all CPU bits set, e.g. "ff" on 8 cores)
+cat /sys/class/net/wlan0/queues/rx-0/rps_cpus
 ```
 
 ## How It Works
@@ -158,6 +162,20 @@ ip route show default && echo "---" && ip -6 route show default
 - `tcp_adv_win_scale=-2`: Overhead protection to prevent buffer bloat
 - `tcp_collapse_max_bytes=6291456`: Collapse limit for better latency handling
 - `tcp_ecn`: Adaptive ECN (Explicit Congestion Notification) based on interface type
+
+### RPS (Receive Packet Steering)
+The script enables **RPS** for each receive queue of the active interface on `up` events.
+
+- Discovers queue files via `/sys/class/net/<iface>/queues/rx-*/rps_cpus`
+- Detects available CPU count with `nproc --all`
+- Builds a hexadecimal mask with all bits set (`f...f`) and writes it to each RX queue
+
+This spreads packet processing across multiple CPU cores and can improve throughput and latency consistency under parallel traffic load.
+
+Example masks:
+- 4 CPUs → `f`
+- 8 CPUs → `ff`
+- 16 CPUs → `ffff`
 
 ### ECN (Explicit Congestion Notification)
 The script intelligently configures **ECN** for better congestion handling:
@@ -276,8 +294,8 @@ tc -s qdisc show dev wlan0 | grep -A 20 cake
 If **nftables is not available**:
 - Script still works perfectly
 - CAKE qdisc still provides bufferbloat reduction
-- ⚠️ No automatic DSCP marking (all traffic treated equally)
-- ℹ️ Manual marking still possible via `iptables -j CLASSIFY` if preferred
+- No automatic DSCP marking (all traffic treated equally)
+- Manual marking still possible via `iptables -j CLASSIFY` if preferred
 
 **Recommendation**: Install nftables for optimal QoS performance:
 ```bash
@@ -306,15 +324,15 @@ The script automatically selects the optimal TCP congestion control algorithm ba
   - Optimal for: Wired connections, modern WiFi, low packet loss
   - Reduces latency: 20-40% lower queueing delays
   - Better for: Gaming, VoIP, interactive applications
-  - ❌ Struggles with: High packet loss (>2%), older WiFi protocols
-  - ℹ️ **BBRv3 on XanMod kernels**: Improved fairness and slow-start behavior
+  - Struggles with: High packet loss (>2%), older WiFi protocols
+  - **BBRv3 on XanMod kernels**: Improved fairness and slow-start behavior
 
 - **CUBIC (Loss-based)**: Automatic fallback for high-loss networks
   - Works best with: WiFi legacy (802.11n), mobile, satellite
   - Better fairness: Coexists well with Reno/NewReno flows
   - Graceful backoff: Handles loss gracefully with exponential reduction
-  - ⚠️ Higher latency: More queueing during congestion
-  - ℹ️ Conservative approach: Safe choice for unreliable networks
+  - Higher latency: More queueing during congestion
+  - Conservative approach: Safe choice for unreliable networks
 
 **WiFi Detection Logic**:
 ```bash
@@ -433,17 +451,17 @@ QDISC=cake diffserv4
 | **Ethernet/WiFi** | 30-42% | 10-30% | 15-35% | Best results with BBR + CAKE |
 | **5G/LTE** | 20-35% | 5-20% | 10-25% | Depends on signal quality |
 | **VPN/Tunnel** | 15-30% | 5-15% | 10-20% | CUBIC preferred, conservative cwnd |
-| **Mobile Hotspot** | 20-35% | 0-10% ⚠️ | 10-20% | Limited by carrier buffers |
+| **Mobile Hotspot** | 20-35% | 0-10% | 10-20% | Limited by carrier buffers |
 
 ### Key Factors for Best Results
 
-✅ **Optimal Conditions:**
+**Optimal Conditions:**
 - Direct connection to home router (no mobile hotspot)
 - Stable network (packet loss < 1%)
 - Low baseline jitter (RTT mdev < 10ms)
 - Existing bufferbloat (baseline latency under load > 50ms)
 
-⚠️ **Limited Improvements Expected:**
+**Limited Improvements Expected:**
 - Mobile hotspots (carrier buffers override CAKE)
 - Already-optimized networks (baseline < 30ms under load)
 - High packet loss networks (> 2%)
@@ -508,22 +526,22 @@ sudo bash Test/netopt-test wlan0 (or similar)
 
 ### When NOT to Expect Improvements
 
-❌ **Your baseline latency under load is already < 30ms**
+**Your baseline latency under load is already < 30ms**
 - Network already has minimal bufferbloat
 - CAKE overhead may slightly increase latency (~1-2ms)
 - Example: Enterprise networks with managed switches
 
-❌ **Using mobile hotspot/tethering**
+**Using mobile hotspot/tethering**
 - Carrier buffers override local CAKE qdisc
 - Only TCP parameter optimizations will help (~20-35% idle latency)
 - Load latency improvements: 0-5% (carrier buffers dominate)
 
-❌ **High packet loss (> 2%)**
+**High packet loss (> 2%)**
 - Retransmissions dominate performance
 - Root cause: Signal quality or ISP issues
 - Fix the packet loss first before optimizing
 
-❌ **ISP traffic shaping already active**
+**ISP traffic shaping already active**
 - Some ISPs implement their own QoS
 - Local optimizations become redundant
 - Check: Test with/without VPN to detect ISP shaping
