@@ -14,6 +14,7 @@ Automatic network performance optimization for Linux systems using NetworkManage
 -  **RAM-Adaptive Buffers**: TCP buffers automatically scale with available memory and RTT
 -  **RTT-Aware Optimization**: All parameters adapt based on measured network latency
 -  **RPS Auto-Tuning**: Enables Receive Packet Steering on RX queues using an all-CPU mask
+-  **RFS Auto-Tuning**: Enables Receive Flow Steering for better flow-to-CPU locality
 -  **Auto-Recovery**: Survives DHCP renewals and network changes
 -  **Interface-Adaptive Settings**: TCP parameters automatically adjust based on connection type and RTT
 
@@ -105,6 +106,10 @@ sysctl net.core.default_qdisc              # Should be: cake
 
 # Check RPS mask (all CPU bits set, e.g. "ff" on 8 cores)
 cat /sys/class/net/wlan0/queues/rx-0/rps_cpus
+
+# Check RFS settings
+sysctl net.core.rps_sock_flow_entries
+cat /sys/class/net/wlan0/queues/rx-0/rps_flow_cnt
 ```
 
 ## How It Works
@@ -176,6 +181,15 @@ Example masks:
 - 4 CPUs → `f`
 - 8 CPUs → `ff`
 - 16 CPUs → `ffff`
+
+### RFS (Receive Flow Steering)
+The script enables **RFS** in addition to RPS to improve flow-to-CPU locality.
+
+- Sets global flow table size via `net.core.rps_sock_flow_entries` (default: `32768`)
+- Detects RX queue count from `/sys/class/net/<iface>/queues/rx-*/rps_flow_cnt`
+- Splits flow entries across all detected RX queues and writes per-queue `rps_flow_cnt`
+
+RFS can reduce tail latency and improve responsiveness during mixed workloads (for example: browsing while streaming).
 
 ### ECN (Explicit Congestion Notification)
 The script intelligently configures **ECN** for better congestion handling:

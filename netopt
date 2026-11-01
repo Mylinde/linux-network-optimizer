@@ -395,17 +395,37 @@ if [ "$ACTION" = "up" ]; then
     setup_tos_marking "$INTERFACE"
 
     # RPS (Receive Packet Steering)
-    for rps_file in /sys/class/net/$INTERFACE/queues/rx-*/rps_cpus; do
-        if [ -f "$rps_file" ]; then
-            CPU_COUNT=$(nproc --all || echo "1")
-            if [ "$CPU_COUNT" -gt 0 ]; then
-                # Build a CPU mask without integer overflows (works for high core counts).
-                HEX_DIGITS=$(( (CPU_COUNT + 3) / 4 ))
-                RPS_MASK=$(printf "%${HEX_DIGITS}s" "" | tr ' ' 'f')
-                printf "%s" "$RPS_MASK" > "$rps_file" 2>/dev/null || true
-            fi
-        fi
+    CPU_COUNT=$(nproc --all 2>/dev/null || echo "1")
+    if [ "$CPU_COUNT" -gt 0 ]; then
+        # Build a CPU mask without integer overflows (works for high core counts).
+        HEX_DIGITS=$(( (CPU_COUNT + 3) / 4 ))
+        RPS_MASK=$(printf "%${HEX_DIGITS}s" "" | tr ' ' 'f')
+
+        for rps_file in /sys/class/net/$INTERFACE/queues/rx-*/rps_cpus; do
+            [ -f "$rps_file" ] || continue
+            printf "%s" "$RPS_MASK" > "$rps_file" 2>/dev/null || true
+        done
+    fi
+
+    # RFS (Receive Flow Steering)
+    RX_QUEUE_COUNT=0
+    for flow_file in /sys/class/net/$INTERFACE/queues/rx-*/rps_flow_cnt; do
+        [ -f "$flow_file" ] || continue
+        RX_QUEUE_COUNT=$((RX_QUEUE_COUNT + 1))
     done
+
+    if [ "$RX_QUEUE_COUNT" -gt 0 ]; then
+        RFS_TOTAL_ENTRIES=32768
+        sysctl -q -w net.core.rps_sock_flow_entries="$RFS_TOTAL_ENTRIES" 2>/dev/null || true
+
+        RFS_FLOW_PER_QUEUE=$((RFS_TOTAL_ENTRIES / RX_QUEUE_COUNT))
+        [ "$RFS_FLOW_PER_QUEUE" -lt 1024 ] && RFS_FLOW_PER_QUEUE=1024
+
+        for flow_file in /sys/class/net/$INTERFACE/queues/rx-*/rps_flow_cnt; do
+            [ -f "$flow_file" ] || continue
+            printf "%s" "$RFS_FLOW_PER_QUEUE" > "$flow_file" 2>/dev/null || true
+        done
+    fi
 
 	# Optimize IPv4 route
 	if [ -n "$GATEWAY" ] && [ "$GATEWAY" != "--" ] && [ -n "$IP" ]; then
